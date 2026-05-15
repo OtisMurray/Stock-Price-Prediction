@@ -1,0 +1,27 @@
+[
+  {
+    "ticker": "AAPL",
+    "company": "Apple",
+    "keywords": ["iphone", "ipad", "mac"]
+  },
+  {
+    "ticker": "NVDA",
+    "company": "Nvidia",
+    "keywords": ["gpu", "ai", "cuda", "jensen"]
+  },
+  {
+    "ticker": "TSLA",
+    "company": "Tesla",
+    "keywords": ["musk", "ev", "robotaxi"]
+  },
+  {
+    "ticker": "MSFT",
+    "company": "Microsoft",
+    "keywords": ["azure", "copilot", "openai"]
+  },
+  {
+    "ticker": "AMZN",
+    "company": "Amazon",
+    "keywords": ["aws", "prime", "andy jassy"]
+  }
+]
