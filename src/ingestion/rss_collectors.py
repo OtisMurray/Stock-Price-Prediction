@@ -39,8 +39,9 @@ def fetch_rss_source(
     source = get_sources([source_key])[0]
     feed = feedparser.parse(source.build_url(ticker=ticker))
     articles: list[Article] = []
+    entries = feed.entries if limit_per_source in (None, 0) else feed.entries[:limit_per_source]
 
-    for entry in feed.entries[:limit_per_source]:
+    for entry in entries:
         title = strip_markup(entry.get("title", ""))
         summary = strip_markup(entry.get("summary", "") or entry.get("description", ""))
         text = ". ".join(part for part in [title, summary] if part)

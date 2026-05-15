@@ -1,1 +1,1 @@
-"""Scratch and prototype scripts."""
+"""Compatibility wrappers for legacy script paths."""

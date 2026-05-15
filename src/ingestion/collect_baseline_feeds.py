@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
         "--limit-per-source",
         type=int,
         default=10,
-        help="Max entries to inspect from each source.",
+        help="Max entries to inspect from each source. Use 0 for no explicit cap.",
     )
     parser.add_argument(
         "--json-out",
@@ -87,7 +87,7 @@ def main() -> None:
     articles = collect_baseline_articles(
         ticker=args.ticker,
         source_keys=source_keys,
-        limit_per_source=args.limit_per_source,
+        limit_per_source=None if args.limit_per_source == 0 else args.limit_per_source,
     )
     filtered = filter_articles(articles, keywords)
 
