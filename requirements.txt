@@ -2,4 +2,5 @@ beautifulsoup4
 cloudscraper
 curl-cffi
 feedparser
+torch
 transformers
