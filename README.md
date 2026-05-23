@@ -1,249 +1,147 @@
 # Stock Price Prediction
 
-Stock Price Prediction is a project focused on forecasting stock price movement by combining historical market data with financial news sentiment.
+Real-time stock-news intelligence dashboard for collecting, organizing, and monitoring market-related articles at scale.
 
-The project is being built as a modular pipeline rather than a single script. The goal is to collect price data and financial news, normalize those inputs, score relevant articles with sentiment analysis, engineer useful predictive features, and compare price-only predictions against price-plus-sentiment predictions inside a dashboard.
+The project has moved beyond the original small watchlist prototype. It now uses a Flask + React dashboard, a SQLite-backed storage layer, shared-source collection, article-pool-first feed logic, and a 50-ticker stress-test setup for backend optimization.
 
-## Goals
+## Current Progress
 
-- collect historical stock price data
-- collect and normalize financial news from multiple sources
-- filter articles by ticker relevance
-- transform news coverage into sentiment-based features
-- combine price and sentiment data in a prediction model
-- present forecasts and supporting insights in a clear dashboard
+The current phase is focused on data-source quality, ingestion reliability, deduplication, timestamp handling, and scalable backend structure before moving into sentiment and prediction layers.
 
-## Intended Product
+What is working now:
 
-The intended final product is a stock-focused dashboard that can refresh on a short cycle and compare multiple views of the same ticker.
+- Flask + React dashboard for live article monitoring
+- SQLite as the main backend data layer for dashboard state
+- Shared-source-pool collection to reduce repeated source fetching
+- 50-ticker stress-test watchlist for scaling and optimization work
+- Source-health tracking and pipeline monitoring
+- Article-pool-first feed with ticker filters layered on top
+- Ticker workspace with relevant news, source history, and a prediction placeholder
+- Timestamp tracking for:
+  - `published`
+  - `first captured`
+  - `last observed`
+  - `latest refresh capture`
 
-The long-term target is to support:
+What is intentionally being saved for later:
 
-1. a defined watchlist of stocks
-2. continuous collection of new articles and recent market data
-3. sentiment scoring of relevant articles
-4. feature generation from both prices and news
-5. at least two predictive paths:
-   - price-only prediction
-   - price-plus-sentiment prediction
-6. dashboard outputs that show recent articles, sentiment state, and model outputs together
+- full sentiment analysis layer
+- prediction models
+- true market-wide collection beyond the tracked ticker universe
 
-## Current Development Path
+## Current Architecture
 
-The project is being built in layers so each part can be tested independently before the full system is connected.
+The current flow is:
 
-The current intended path is:
+1. Collect RSS and structured public stock-news sources
+2. Normalize timestamps and article fields during ingestion
+3. Match articles to tracked tickers
+4. Deduplicate and cluster similar stories
+5. Store refreshes, stories, observations, and source-health data in SQLite
+6. Serve dashboard state through Flask API routes
+7. Render the article feed and ticker workspace in the dashboard frontend
 
-1. build the ingestion layer first
-2. make ingestion save structured article outputs
-3. add deduplication and short-term caching
-4. turn sentiment scoring into its own reusable module
-5. add historical price ingestion
-6. engineer combined price and sentiment features
-7. build prediction scripts
-8. connect the outputs to a dashboard
+### Key Backend Ideas
 
-This means the system is not being treated as one large file. Each script is intended to own one clear responsibility.
+- **Shared Source Pool**
+  Shared sources are fetched once per refresh, then matched across the tracked ticker universe. This is the main speed improvement over the older per-ticker refetch model.
 
-## Current Repository Structure
+- **SQLite-Backed Dashboard**
+  The dashboard no longer depends primarily on a static snapshot JSON file. SQLite is the main source of truth for the live app, while JSON can still be written as a backup/export artifact.
 
-```text
-Stock-Price-Prediction/
-├── README.md
-├── requirements.txt
-├── .gitignore
-├── assets/
-├── data/
-│   ├── cache/
-│   └── watchlists/
-├── src/
-│   ├── __init__.py
-│   ├── ingestion/
-│   ├── preprocessing/
-│   ├── runners/
-│   ├── sentiment/
-│   └── other/
-└── tmp/
-```
+- **Article-Pool-First Feed**
+  The main feed is organized around deduplicated articles, not repeated ticker rows. Ticker filters now act as drilldowns on top of the broader article pool.
 
-Main package roles:
+- **Ticker Workspace**
+  Clicking into a ticker opens a focused workspace for relevant coverage, source history, and a later prediction layer.
 
-- `src/ingestion/`
-  - source definitions and collectors
-- `src/preprocessing/`
-  - relevance scoring, filtering, duplicate clustering, event tagging
-- `src/runners/`
-  - real CLI-style scripts for ticker collection, watchlist snapshots, polling, and reporting
-- `src/sentiment/`
-  - early sentiment demo code only; sentiment is not the current focus
-- `src/other/`
-  - compatibility wrappers so older commands still work
+## Current Data Sources
 
-## Environment Setup
+### RSS and Feed Sources
 
-Before running any project scripts, create and activate a virtual environment in the project root and install the current requirements.
-
-Create the virtual environment:
-
-```bash
-python3 -m venv .venv
-```
-
-Activate it:
-
-```bash
-source .venv/bin/activate
-```
-
-Install the current requirements:
-
-```bash
-pip install -r requirements.txt
-```
-
-Quick startup sequence from the project root:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-After the environment is active, the current main commands are:
-
-```bash
-python3 src/other/collect_all_for_ticker.py --ticker AAPL --company Apple --keyword iphone --keyword mac --structured-limit 0 --rss-limit 0 --include-seen
-python3 src/other/collect_watchlist_snapshot.py --watchlist-file data/watchlists/sample_watchlist.json --json-out data/cache/watchlist_snapshot.json --structured-limit 0 --rss-limit 0 --include-seen
-python3 src/other/summarize_source_usage.py --json-file data/cache/watchlist_snapshot.json
-```
-
-## Current Scripts And How They Connect
-
-This section documents the current working process rather than the original early prototype plan.
-
-### Current Data Sources
-
-The current source layer is split into two groups.
-
-Baseline RSS sources:
 - Yahoo Finance Headlines
 - MarketWatch Top Stories
 - MarketWatch MarketPulse
 - SEC Press Releases
 - PR Newswire All News Releases
 
-Structured public news sources:
+### Structured Public Sources
+
 - PR Newswire
 - GlobeNewswire
 - ACCESS Newswire
 - MT Newswires
 - Finviz
 
-Current source-status notes:
-- `Yahoo Finance Headlines`
-  - strongest ticker-specific baseline source for many large-cap names
-- `Finviz`
-  - useful as a broad aggregator and discovery source
-  - can be noisy, so preprocessing is stricter
-- `PR Newswire`
-  - validated with direct company-specific results such as `AEE`
-- `GlobeNewswire`
-  - validated with company-specific results such as `LFST` and `SLXN`
-- `ACCESS Newswire`
-  - validated with direct company-specific results such as `HLPN`
-- `MT Newswires`
-  - public site is limited compared with the premium feed
-  - currently treated as a low-confidence public source rather than a core validated source
+## Repository Structure
 
-### Current Ingestion Layer
+```text
+src/
+  dashboard/        Flask app, dashboard state, and UI logic
+  ingestion/        RSS collectors, structured collectors, source pipeline, timestamp utils
+  preprocessing/    Deduplication, bucketing, event tagging, story clustering
+  runners/          Main executable workflows
+  storage/          SQLite read/write helpers
+  other/            Convenience wrappers for common scripts
+  sentiment/        Reserved for later sentiment work
 
-Important current ingestion files:
-- `src/ingestion/models.py`
-  - normalized article structures
-- `src/ingestion/rss_sources.py`
-  - baseline RSS source registry
-- `src/ingestion/rss_collectors.py`
-  - RSS collection helpers and keyword builder
-- `src/ingestion/structured_sources.py`
-  - structured/public source registry
-- `src/ingestion/structured_collectors.py`
-  - PR/Globe/ACCESS/MT/Finviz collection logic
-- `src/ingestion/seen_cache.py`
-  - remembers structured links already seen today
+data/
+  watchlists/       Sample and stress-test ticker lists
 
-Important implementation notes:
-- `ACCESS Newswire` uses the public newsroom/API behavior behind the public page
-- raw keyword matching now tolerates punctuation and formatting differences such as:
-  - `SA` vs `S.A.`
-  - similar spacing/punctuation variants in company names
+assets/             Charts and supporting visuals
+tmp/                Temporary working files
+```
 
-### Current Preprocessing Layer
+## Important Files
 
-Main preprocessing file:
-- `src/preprocessing/news_preprocessor.py`
+- `/Users/otismurray/Stock-Price-Prediction/src/dashboard/watchlist_dashboard.py`
+- `/Users/otismurray/Stock-Price-Prediction/src/dashboard/dashboard_state.py`
+- `/Users/otismurray/Stock-Price-Prediction/src/storage/sqlite_store.py`
+- `/Users/otismurray/Stock-Price-Prediction/src/ingestion/source_pipeline.py`
+- `/Users/otismurray/Stock-Price-Prediction/src/ingestion/timestamp_utils.py`
+- `/Users/otismurray/Stock-Price-Prediction/src/preprocessing/news_preprocessor.py`
+- `/Users/otismurray/Stock-Price-Prediction/data/watchlists/sample_watchlist.json`
+- `/Users/otismurray/Stock-Price-Prediction/data/watchlists/stress_watchlist_50.json`
 
-This layer is now doing much more than simple keyword filtering.
+## Setup
 
-Current preprocessing responsibilities:
-- build ticker profiles with:
-  - identity terms
-  - specific context terms
-  - generic context terms
-- assign relevance scores
-- reject obvious false positives
-- separate:
-  - `stories` = primary
-  - `related_context`
-  - `review_candidates`
-  - `rejections`
-- cluster duplicates across sources
-- preserve:
-  - `coverage_count`
-  - `coverage_sources`
-- classify event types
-- calculate:
-  - `event_importance_weight`
-  - `signal_strength`
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-Current event types include:
-- `earnings_or_guidance`
-- `analyst_rating_or_target`
-- `executive_change`
-- `regulatory_or_geopolitical`
-- `product_or_strategy`
-- `market_reaction`
-- `comparison_or_context`
-- `general_company_focus`
+## Main Commands
 
-Design intent:
-- `primary` stays relatively strict
-- `related_context` keeps meaningful but less-direct stories
-- `review_candidates` preserves borderline company-adjacent cases
-- `rejections` should mostly contain true noise
+### Run the Current Dashboard
 
-### Current Runner Scripts
+```bash
+python3 src/other/watchlist_dashboard.py
+```
 
-Real CLI-style runners live in `src/runners/`.
+Then open:
 
-Current runner files:
-- `src/runners/collect_all_for_ticker.py`
-  - collect and preprocess one ticker
-- `src/runners/collect_watchlist_snapshot.py`
-  - collect and preprocess the full watchlist once
-- `src/runners/summarize_source_usage.py`
-  - summarize source usage from one ticker debug file or a watchlist snapshot
-- `src/runners/poll_watchlist.py`
-  - run the watchlist repeatedly on a fixed interval
+- `http://127.0.0.1:8000`
 
-Compatibility wrappers live in `src/other/` so older commands still work:
-- `src/other/collect_all_for_ticker.py`
-- `src/other/collect_watchlist_snapshot.py`
-- `src/other/summarize_source_usage.py`
-- `src/other/poll_watchlist.py`
+### Run the Legacy Dashboard
 
-### Current Commands
+```bash
+python3 src/other/watchlist_dashboard_legacy.py --port 8001
+```
 
-Collect one ticker:
+### Run a 50-Ticker Collection Snapshot
+
+```bash
+python3 src/other/collect_watchlist_snapshot.py \
+  --watchlist-file data/watchlists/stress_watchlist_50.json \
+  --json-out data/cache/watchlist_snapshot_50_latest.json \
+  --rss-limit 0 \
+  --structured-limit 0 \
+  --include-seen \
+  --sqlite-db data/cache/watchlist_pipeline.db
+```
+
+### Run a Single-Ticker Collection
 
 ```bash
 python3 src/other/collect_all_for_ticker.py \
@@ -251,175 +149,71 @@ python3 src/other/collect_all_for_ticker.py \
   --company Apple \
   --keyword iphone \
   --keyword mac \
-  --structured-limit 0 \
   --rss-limit 0 \
-  --include-seen \
-  --json-out data/cache/aapl_all_results.json \
-  --debug-json-out data/cache/aapl_debug.json
-```
-
-Collect the whole watchlist once:
-
-```bash
-python3 src/other/collect_watchlist_snapshot.py \
-  --watchlist-file data/watchlists/sample_watchlist.json \
-  --json-out data/cache/watchlist_snapshot.json \
   --structured-limit 0 \
-  --rss-limit 0 \
   --include-seen
 ```
 
-Summarize source usage:
+### Audit Current Sources
 
 ```bash
-python3 src/other/summarize_source_usage.py \
-  --json-file data/cache/watchlist_snapshot.json
+python3 src/other/audit_sources.py --ticker AAPL --limit 3
 ```
 
-Run the watchlist on a polling loop:
+## Current Dashboard Behavior
 
-```bash
-python3 src/other/poll_watchlist.py \
-  --watchlist-file data/watchlists/sample_watchlist.json \
-  --latest-json-out data/cache/watchlist_snapshot.json \
-  --history-dir data/cache/watchlist_history \
-  --history-keep 30 \
-  --interval-seconds 120 \
-  --include-seen \
-  --clear-stop-file
-```
+The current dashboard supports:
 
-Stop the polling loop cleanly:
+- live refresh from within the UI
+- source-health summaries
+- tracked ticker counts
+- visible article counts
+- visible source counts
+- top article feed sorted by current signal
+- ticker filtering and drilldown
+- selected ticker workspace
+- source-history display
 
-```bash
-touch tmp/watchlist_polling.stop
-```
+The feed is intentionally limited to a smaller top-board style view instead of rendering every stored article at once.
 
-### Current Automation Behavior
+## Current Scaling Direction
 
-The watchlist polling runner is intended for short-cycle testing and later light automation.
+The system is being optimized in this order:
 
-Current polling behavior:
-- overwrites the latest snapshot file each run
-- optionally writes timestamped history files
-- keeps only the most recent history snapshots by default
-- stops cleanly when the stop file exists
+1. source reliability
+2. ingestion speed
+3. timestamp quality
+4. deduplication and story identity
+5. backend structure for later sentiment/prediction
 
-Current history behavior:
-- `data/cache/watchlist_snapshot.json`
-  - current latest snapshot, overwritten each run
-- `data/cache/watchlist_history/`
-  - optional rolling history snapshots
-- `--history-keep 30`
-  - default retention boundary for history files
+The immediate goal is not “full prediction now.” The immediate goal is a stronger ingestion and storage foundation that can later support sentiment and prediction cleanly.
 
-This means the current setup can be used for:
-- repeated short-cycle QA runs
-- repeated watchlist refresh testing
-- later feature/prediction integration
+## Current Limitations
 
-without allowing history files to grow forever.
+- collection is still based on a tracked ticker universe rather than true market-wide entity extraction
+- some sources do not always expose perfect timestamps
+- source-history depth depends on how many refreshes have already been stored
+- retention/pruning policy is not fully implemented yet
+- sentiment and prediction are intentionally deferred to a later phase
 
-### Current Output Philosophy
+## Next Development Focus
 
-The current project intentionally separates:
-- latest state
-- rolling debug history
-- future long-term memory
+Planned near-term work:
 
-Right now:
-- latest snapshots are JSON
-- rolling short-term history can stay JSON during testing
+- continue improving deduplication and story clustering
+- keep tightening timestamp normalization
+- refine source-tier scheduling for faster refreshes
+- improve ticker workspace presentation
+- continue backend preparation for later sentiment and prediction
 
-Later:
-- longer-term article memory, sentiment memory, and feature history should move into `SQLite`
-- latest dashboard/prediction outputs should still be overwritten each cycle
+Later work:
 
-### Current Development Focus
+- market-wide article ingestion
+- entity extraction beyond a fixed tracked list
+- sentiment scoring
+- on-demand per-ticker prediction workflow
 
-The project is still in the source-data and preprocessing stage.
+## Notes
 
-Current priority:
-- make sure the source layer is trustworthy
-- validate that direct company-specific stories are being captured
-- reduce false positives
-- preserve useful borderline articles without flooding primary
-
-Not the current priority:
-- full sentiment productionization
-- macro/political event ingestion
-- full prediction modeling
-
-Those are later layers once the company-news pipeline is stable.
-
-## Current End-To-End Process
-
-The current implemented process is:
-
-```text
-1. Source collection
-   baseline RSS + public structured sources
-
-2. Raw keyword pre-filter
-   broad enough to catch candidate matches
-
-3. Preprocessing
-   relevance scoring, source-aware filtering, duplicate clustering, event tagging
-
-4. Bucket assignment
-   primary stories, related context, review candidates, true rejections
-
-5. Output
-   latest JSON snapshot, optional ticker debug JSON, optional rolling watchlist history
-```
-
-## Next Planned Layers
-
-The next major layers are still expected to be:
-
-1. better persistent storage
-   - likely `SQLite`
-2. sentiment integration
-   - after source-layer confidence is high enough
-3. historical price ingestion
-4. combined feature engineering
-5. prediction logic
-6. dashboard presentation
-
-7. Dashboard layer
-   display the latest metrics and prediction outputs in a refreshable interface
-```
-
-## Why The Scripts Are Split This Way
-
-Each script or package is being kept narrow on purpose.
-
-This separation is intended to make the project:
-- easier to test
-- easier to debug
-- easier to expand
-- easier to benchmark
-- more reliable when refresh cycles are added later
-
-Examples:
-- ingestion scripts should not contain model-training logic
-- sentiment scripts should not contain hardcoded feed registries
-- dashboard scripts should not scrape the web directly
-- modeling scripts should consume structured features rather than raw RSS entries
-
-That separation is what will allow the project to grow from a working prototype into a more complete pipeline.
-
-## Immediate Next Steps
-
-The next implementation steps are:
-
-1. add a `data/` structure for cached and processed outputs
-2. make ingestion save structured results automatically
-3. add lightweight local storage and deduplication
-4. move FinBERT scoring into a dedicated sentiment package
-5. add price ingestion and feature engineering
-6. begin the first prediction baseline
-
-## Project Flowchart
-
-![Stock Price Prediction Flowchart](assets/IST495_Internship_Flowchart.png)
+- `data/cache/` and `tmp/` are ignored in Git because they contain generated snapshots, temporary files, and the local SQLite database.
+- The local dashboard is meant for development and testing on `127.0.0.1`. Sharing it publicly later would require deployment rather than just sending the localhost link.
