@@ -37,6 +37,37 @@ COMPANY_SUFFIXES = {
     "plc",
 }
 
+TITLE_SIGNATURE_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "after",
+    "amid",
+    "before",
+    "can",
+    "for",
+    "from",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "or",
+    "over",
+    "the",
+    "their",
+    "this",
+    "to",
+    "today",
+    "up",
+    "why",
+    "with",
+}
+
 ROUNDUP_PATTERNS = (
     re.compile(r"\btop stories\b", re.IGNORECASE),
     re.compile(r"\btop midday stories\b", re.IGNORECASE),
@@ -260,6 +291,15 @@ def _normalize_title_key(title: str) -> str:
     return " ".join(cleaned.split())
 
 
+def _title_signature(title: str) -> str:
+    tokens = [
+        token
+        for token in _normalize_title_key(title).split()
+        if len(token) >= 3 and token not in TITLE_SIGNATURE_STOPWORDS and token not in COMPANY_SUFFIXES
+    ]
+    return " ".join(tokens[:10])
+
+
 def _source_priority(row: dict[str, Any]) -> int:
     return SOURCE_PRIORITY.get(str(row.get("source_key", "")), 50)
 
@@ -356,15 +396,22 @@ def score_row_relevance(row: dict[str, Any], profile: TickerProfile) -> dict[str
         "rejection_reasons": reasons,
         "canonical_link": _canonicalize_link(str(row.get("link", ""))),
         "normalized_title_key": _normalize_title_key(title),
+        "title_signature": _title_signature(title),
     }
 
 
 def cluster_relevant_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     title_key_counts: dict[str, int] = {}
+    signature_counts: dict[tuple[str, str], int] = {}
     for row in rows:
         title_key = str(row.get("normalized_title_key", ""))
         if title_key:
             title_key_counts[title_key] = title_key_counts.get(title_key, 0) + 1
+        title_signature = str(row.get("title_signature", ""))
+        event_type = str(row.get("event_type", ""))
+        if title_signature:
+            signature_key = (event_type, title_signature)
+            signature_counts[signature_key] = signature_counts.get(signature_key, 0) + 1
 
     clusters: dict[str, list[dict[str, Any]]] = {}
     order: list[str] = []
@@ -372,8 +419,12 @@ def cluster_relevant_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for row in rows:
         title_key = str(row.get("normalized_title_key", ""))
         canonical_link = str(row.get("canonical_link", ""))
+        title_signature = str(row.get("title_signature", ""))
+        event_type = str(row.get("event_type", ""))
         if title_key and title_key_counts.get(title_key, 0) > 1:
             cluster_key = f"title:{title_key}"
+        elif title_signature and signature_counts.get((event_type, title_signature), 0) > 1:
+            cluster_key = f"signature:{event_type}:{title_signature}"
         else:
             cluster_key = canonical_link or title_key or row.get("link") or row.get("title")
         if cluster_key not in clusters:
@@ -394,20 +445,25 @@ def cluster_relevant_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         coverage_sources = sorted({str(item.get("source_name", "")) for item in members if item.get("source_name")})
         coverage_source_keys = sorted({str(item.get("source_key", "")) for item in members if item.get("source_key")})
         duplicate_links = sorted({str(item.get("canonical_link", "")) for item in members if item.get("canonical_link")})
+        source_diversity = len(coverage_source_keys)
+        member_count = len(members)
+        diversity_boost = 1 + 0.12 * max(source_diversity - 1, 0)
+        coverage_boost = 1 + 0.08 * max(member_count - 1, 0)
 
         clustered_rows.append(
             {
                 **canonical,
-                "coverage_count": len(members),
+                "coverage_count": member_count,
                 "coverage_sources": coverage_sources,
                 "coverage_source_keys": coverage_source_keys,
-                "cluster_members": len(members),
+                "cluster_members": member_count,
                 "merged_titles": sorted({str(item.get("title", "")) for item in members if item.get("title")}),
                 "duplicate_links": duplicate_links,
                 "signal_strength": round(
                     float(canonical.get("relevance_score", 0.0))
                     * float(canonical.get("event_importance_weight", 0.75))
-                    * (1 + 0.15 * (len(members) - 1)),
+                    * diversity_boost
+                    * coverage_boost,
                     2,
                 ),
             }

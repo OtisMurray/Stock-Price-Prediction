@@ -96,6 +96,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip the structured sources during polling.",
     )
+    parser.add_argument(
+        "--sqlite-db",
+        default="",
+        help="Optional SQLite database path for persisting each polling refresh.",
+    )
     return parser.parse_args()
 
 
@@ -162,6 +167,7 @@ def main() -> None:
             include_seen=args.include_seen,
             skip_rss=args.skip_rss,
             skip_structured=args.skip_structured,
+            sqlite_db=args.sqlite_db,
         )
         _write_snapshot(latest_path, snapshot)
         if history_dir:

@@ -5,13 +5,14 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+import time
 from typing import Any
 
 repo_root = Path(__file__).resolve().parents[2]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from src.runners.collect_all_for_ticker import collect_for_ticker
+from src.storage.sqlite_store import persist_watchlist_snapshot
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,6 +64,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip the structured sources for the watchlist run.",
     )
+    parser.add_argument(
+        "--sqlite-db",
+        default="",
+        help="Optional SQLite database path for persisting watchlist refresh history.",
+    )
     return parser.parse_args()
 
 
@@ -87,6 +93,8 @@ def load_watchlist_entries(path: str) -> list[dict[str, Any]]:
             {
                 "ticker": ticker,
                 "company": company,
+                "sector": str(item.get("sector", "")).strip(),
+                "industry": str(item.get("industry", "")).strip(),
                 "keywords": [str(keyword).strip() for keyword in keywords if str(keyword).strip()],
             }
         )
@@ -102,58 +110,105 @@ def build_watchlist_snapshot(
     include_seen: bool = False,
     skip_rss: bool = False,
     skip_structured: bool = False,
+    sqlite_db: str = "",
 ) -> dict[str, Any]:
+    from src.ingestion.rss_collectors import build_keywords
+    from src.ingestion.source_pipeline import collect_watchlist_candidate_rows
+    from src.preprocessing.news_preprocessor import build_ticker_profile, preprocess_ticker_news
+    from src.runners.collect_all_for_ticker import build_source_usage, matches_keywords
+
     entries = load_watchlist_entries(watchlist_file)
+    started = time.perf_counter()
+    collection = collect_watchlist_candidate_rows(
+        entries=entries,
+        rss_limit=rss_limit,
+        structured_limit=structured_limit,
+        state_file=state_file,
+        include_seen=include_seen,
+        skip_rss=skip_rss,
+        skip_structured=skip_structured,
+        matcher=matches_keywords,
+    )
     ticker_results: list[dict[str, Any]] = []
     for entry in entries:
-        result = collect_for_ticker(
-            ticker=entry["ticker"],
-            company=entry["company"],
-            extra_keywords=entry["keywords"],
-            rss_limit=rss_limit,
-            structured_limit=structured_limit,
-            skip_rss=skip_rss,
-            skip_structured=skip_structured,
-            state_file=state_file,
-            include_seen=include_seen,
+        ticker = entry["ticker"]
+        company = entry["company"]
+        extra_keywords = entry["keywords"]
+        raw_rows = collection.rows_by_ticker.get(ticker, [])
+        profile = build_ticker_profile(
+            ticker=ticker,
+            company_name=company,
+            extra_keywords=extra_keywords,
         )
+        preprocessing_result = preprocess_ticker_news(raw_rows, profile)
+        source_usage = build_source_usage(raw_rows, preprocessing_result)
         ticker_results.append(
             {
-                "ticker": result["ticker"],
-                "company": result["company"],
-                "keywords": result["keywords"],
-                "failures": result["failures"],
-                "source_usage": result["source_usage"],
-                "stats": result["preprocessing"]["stats"],
-                "stories": result["preprocessing"]["stories"],
-                "related_context": result["preprocessing"]["related_context"],
-                "review_candidates": result["preprocessing"]["review_candidates"],
-                "rejections": result["preprocessing"]["rejections"],
+                "ticker": ticker,
+                "company": company,
+                "sector": entry["sector"],
+                "industry": entry["industry"],
+                "raw_match_count": len(raw_rows),
+                "keywords": build_keywords(
+                    ticker=ticker,
+                    company_name=company or None,
+                    extra_keywords=extra_keywords,
+                ),
+                "failures": collection.failures,
+                "source_usage": source_usage,
+                "stats": preprocessing_result["stats"],
+                "stories": preprocessing_result["stories"],
+                "related_context": preprocessing_result["related_context"],
+                "review_candidates": preprocessing_result["review_candidates"],
+                "rejections": preprocessing_result["rejections"],
             }
         )
 
-    return {
+    snapshot = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "collection_elapsed_seconds": round(time.perf_counter() - started, 3),
         "watchlist_file": watchlist_file,
         "rss_limit": rss_limit,
         "structured_limit": structured_limit,
         "include_seen": include_seen,
+        "pipeline_mode": "shared_source_pool",
+        "source_health": collection.source_health,
+        "failures": collection.failures,
         "tickers": ticker_results,
     }
+    if sqlite_db:
+        persist_watchlist_snapshot(sqlite_db, snapshot)
+    return snapshot
 
 
 def print_watchlist_summary(snapshot: dict[str, Any]) -> None:
     print("Collect Watchlist Snapshot")
     print("=" * 70)
     print(f"Watchlist entries: {len(snapshot['tickers'])}")
+    print(f"Pipeline mode: {snapshot.get('pipeline_mode', 'unknown')}")
+    print(f"Collection elapsed: {snapshot.get('collection_elapsed_seconds', 0)} seconds")
     for item in snapshot["tickers"]:
         print(
             f"{item['ticker']}: "
+            f"{item.get('raw_match_count', 0)} raw, "
             f"{item['stats']['clustered_story_count']} primary, "
             f"{item['stats']['related_context_rows']} related, "
             f"{item['stats']['review_candidate_rows']} review, "
             f"{item['stats']['rejected_rows']} rejected"
         )
+    if snapshot.get("source_health"):
+        healthy = sum(1 for row in snapshot["source_health"] if row.get("ok"))
+        unhealthy = sum(1 for row in snapshot["source_health"] if not row.get("ok"))
+        print(f"Source health rows: {len(snapshot['source_health'])} ({healthy} ok, {unhealthy} failed)")
+        for row in snapshot["source_health"]:
+            status = "OK" if row.get("ok") else "FAIL"
+            cache_note = " cache" if row.get("cache_hit") else ""
+            ticker_label = f" [{row.get('ticker')}]" if row.get("ticker") else ""
+            print(
+                f"  - {status}{cache_note} {row.get('source_name', row.get('source_key', 'source'))}{ticker_label}: "
+                f"fetched={row.get('fetched_count', 0)} matched={row.get('matched_count', 0)} "
+                f"time={row.get('elapsed_seconds', 0)}s"
+            )
     print("=" * 70)
 
 
@@ -167,6 +222,7 @@ def main() -> None:
         include_seen=args.include_seen,
         skip_rss=args.skip_rss,
         skip_structured=args.skip_structured,
+        sqlite_db=args.sqlite_db,
     )
 
     output_path = Path(args.json_out)

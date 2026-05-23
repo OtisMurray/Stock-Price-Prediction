@@ -2,6 +2,12 @@
 
 from .fetch_source_url import FetchedPage, fetch_url_with_fallback
 from .models import Article
+from .source_pipeline import (
+    SourceCollectionResult,
+    WatchlistSourceCollectionResult,
+    collect_candidate_rows,
+    collect_watchlist_candidate_rows,
+)
 from .structured_collectors import StructuredHeadline, collect_structured_headlines
 from .structured_sources import PUBLIC_STRUCTURED_SOURCE_KEYS, get_structured_source
 
@@ -28,8 +34,12 @@ __all__ = [
     "Article",
     "DEFAULT_BASELINE_SOURCE_KEYS",
     "PUBLIC_STRUCTURED_SOURCE_KEYS",
+    "SourceCollectionResult",
+    "WatchlistSourceCollectionResult",
     "StructuredHeadline",
     "build_keywords",
+    "collect_candidate_rows",
+    "collect_watchlist_candidate_rows",
     "collect_baseline_articles",
     "collect_structured_headlines",
     "fetch_url_with_fallback",

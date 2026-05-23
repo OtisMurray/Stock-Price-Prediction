@@ -88,17 +88,41 @@ def _compact_keyword_text(text: str) -> str:
     return "".join(NON_ALNUM_RE.sub("", text.lower()).split())
 
 
+def _contains_phrase(haystack: str, phrase: str) -> bool:
+    padded_haystack = f" {haystack} "
+    padded_phrase = f" {phrase} "
+    return padded_phrase in padded_haystack
+
+
 def matches_keywords(text_parts: list[str], keywords: list[str]) -> bool:
     haystack = " ".join(part for part in text_parts if part)
     normalized_haystack = _normalize_keyword_text(haystack)
     compact_haystack = _compact_keyword_text(haystack)
+    haystack_tokens = set(normalized_haystack.split())
 
     for keyword in keywords:
         normalized_keyword = _normalize_keyword_text(keyword)
         compact_keyword = _compact_keyword_text(keyword)
-        if normalized_keyword and normalized_keyword in normalized_haystack:
+        if not normalized_keyword:
+            continue
+
+        # Very short tickers like V, GE, MA, and DE need exact token matching,
+        # otherwise they spuriously match inside unrelated words.
+        if " " not in normalized_keyword and len(normalized_keyword) <= 2:
+            if normalized_keyword in haystack_tokens:
+                return True
+            continue
+
+        if " " in normalized_keyword:
+            if _contains_phrase(normalized_haystack, normalized_keyword):
+                return True
+            if len(compact_keyword) >= 5 and compact_keyword in compact_haystack:
+                return True
+            continue
+
+        if normalized_keyword in haystack_tokens:
             return True
-        if compact_keyword and compact_keyword in compact_haystack:
+        if len(compact_keyword) >= 4 and compact_keyword in compact_haystack:
             return True
     return False
 
@@ -137,10 +161,8 @@ def collect_for_ticker(
     state_file: str = "tmp/seen_structured_headlines_today.json",
     include_seen: bool = False,
 ) -> dict[str, Any]:
-    from src.ingestion.rss_collectors import build_keywords, collect_baseline_articles
-    from src.ingestion.seen_cache import load_seen_links, save_seen_links
-    from src.ingestion.structured_collectors import collect_structured_headlines
-    from src.ingestion.structured_sources import PUBLIC_STRUCTURED_SOURCE_KEYS, STRUCTURED_SOURCES
+    from src.ingestion.rss_collectors import build_keywords
+    from src.ingestion.source_pipeline import collect_candidate_rows
     from src.preprocessing.news_preprocessor import build_ticker_profile, preprocess_ticker_news
 
     keywords = build_keywords(
@@ -148,64 +170,20 @@ def collect_for_ticker(
         company_name=company or None,
         extra_keywords=extra_keywords,
     )
-
-    combined_rows: list[dict[str, str]] = []
-    failures: list[str] = []
-    seen_links = set() if include_seen else load_seen_links(state_file)
-    newly_seen = set(seen_links)
-
-    if not skip_rss:
-        try:
-            rss_articles = collect_baseline_articles(
-                ticker=ticker,
-                limit_per_source=None if rss_limit == 0 else rss_limit,
-            )
-            for article in rss_articles:
-                if matches_keywords([article.title, article.summary, article.text], keywords):
-                    combined_rows.append(
-                        {
-                            "source_group": "baseline_rss",
-                            "source_key": article.source_key,
-                            "source_name": article.source_name,
-                            "title": article.title,
-                            "link": article.link,
-                            "published": article.published,
-                            "summary": article.summary,
-                            "collection_method": "rss",
-                        }
-                    )
-        except Exception as exc:
-            failures.append(f"baseline_rss: {exc}")
-
-    if not skip_structured:
-        for source_key in PUBLIC_STRUCTURED_SOURCE_KEYS:
-            try:
-                headlines = collect_structured_headlines(
-                    source_key,
-                    limit=None if structured_limit == 0 else structured_limit,
-                )
-                for headline in headlines:
-                    if not include_seen and headline.link in seen_links:
-                        continue
-                    if matches_keywords([headline.title, headline.summary], keywords):
-                        combined_rows.append(
-                            {
-                                "source_group": "structured_news",
-                                "source_key": headline.source_key,
-                                "source_name": headline.source_name,
-                                "title": headline.title,
-                                "link": headline.link,
-                                "published": headline.published,
-                                "summary": headline.summary,
-                                "collection_method": headline.collection_method,
-                            }
-                        )
-                        newly_seen.add(headline.link)
-            except Exception as exc:
-                failures.append(f"{STRUCTURED_SOURCES[source_key].name}: {exc}")
-
-    if not include_seen:
-        save_seen_links(state_file, newly_seen)
+    collection = collect_candidate_rows(
+        ticker=ticker,
+        company=company,
+        extra_keywords=extra_keywords,
+        rss_limit=rss_limit,
+        structured_limit=structured_limit,
+        skip_rss=skip_rss,
+        skip_structured=skip_structured,
+        state_file=state_file,
+        include_seen=include_seen,
+        matcher=matches_keywords,
+    )
+    combined_rows = collection.rows
+    failures = collection.failures
 
     profile = build_ticker_profile(
         ticker=ticker,

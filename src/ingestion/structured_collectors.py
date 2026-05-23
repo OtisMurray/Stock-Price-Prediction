@@ -43,6 +43,17 @@ NOISE_EXACT = {
     "home",
 }
 
+DATEISH_RE = re.compile(
+    r"(" 
+    r"\b\d{1,2}\s*(?:min|mins|minute|minutes|hour|hours|day|days)\b"
+    r"|"
+    r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\b"
+    r"|"
+    r"\b\d{4}-\d{2}-\d{2}(?:[t\s]\d{2}:\d{2}(?::\d{2})?)?(?:z)?\b"
+    r")",
+    re.IGNORECASE,
+)
+
 
 def _normalize_text(text: str) -> str:
     return " ".join(unescape(text or "").split())
@@ -57,6 +68,53 @@ def _is_probable_headline(text: str) -> bool:
     if clean.count(" ") < 2:
         return False
     return True
+
+
+def _extract_dateish_text(text: str) -> str:
+    clean = _normalize_text(text)
+    match = DATEISH_RE.search(clean)
+    return match.group(1) if match else ""
+
+
+def _extract_published_from_anchor(source: StructuredSource, anchor) -> str:
+    # Finviz stores relative time in the left table cell on the same row.
+    if source.key == "finviz":
+        row = anchor.find_parent("tr")
+        if row:
+            date_cell = row.select_one("td.news_date-cell")
+            if date_cell:
+                return _normalize_text(date_cell.get_text(" ", strip=True))
+
+    # MT Newswires exposes a card-level date block.
+    if source.key == "mtnewswires":
+        article = anchor.find_parent("article")
+        if article:
+            date_block = article.select_one(".dt-sec")
+            if date_block:
+                return _normalize_text(date_block.get_text(" ", strip=True))
+
+    # Generic HTML fallback: try nearby <time> tags, datetime attrs, and date-like text blocks.
+    current = anchor
+    for _ in range(5):
+        if not current:
+            break
+        time_tag = current.find("time")
+        if time_tag:
+            return _normalize_text(time_tag.get("datetime", "") or time_tag.get_text(" ", strip=True))
+
+        descendants = current.find_all(True, limit=25)
+        for node in descendants:
+            datetime_attr = node.get("datetime") if hasattr(node, "get") else None
+            if datetime_attr:
+                return _normalize_text(datetime_attr)
+            classes = " ".join(node.get("class", [])) if hasattr(node, "get") else ""
+            if any(token in classes.lower() for token in ("date", "time", "meta")):
+                extracted = _extract_dateish_text(node.get_text(" ", strip=True))
+                if extracted:
+                    return extracted
+        current = current.parent
+
+    return ""
 
 
 def _headline_from_feed(source: StructuredSource, limit: int | None) -> list[StructuredHeadline]:
@@ -245,6 +303,7 @@ def _headline_from_html(source: StructuredSource, limit: int | None) -> list[Str
 
         parent_text = _normalize_text(anchor.parent.get_text(" ", strip=True)) if anchor.parent else ""
         summary = parent_text if parent_text != title else ""
+        published = _extract_published_from_anchor(source, anchor)
 
         results.append(
             StructuredHeadline(
@@ -252,7 +311,7 @@ def _headline_from_html(source: StructuredSource, limit: int | None) -> list[Str
                 source_name=source.name,
                 title=title,
                 link=full_link,
-                published="",
+                published=published,
                 summary=summary[:400],
                 collection_method="html",
                 notes=source.notes,
