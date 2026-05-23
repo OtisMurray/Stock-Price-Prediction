@@ -2,26 +2,155 @@
   {
     "ticker": "AAPL",
     "company": "Apple",
+    "sector": "Technology",
+    "industry": "Consumer Electronics",
     "keywords": ["iphone", "ipad", "mac"]
   },
   {
     "ticker": "NVDA",
     "company": "Nvidia",
+    "sector": "Technology",
+    "industry": "Semiconductors",
     "keywords": ["gpu", "ai", "cuda", "jensen"]
   },
   {
     "ticker": "TSLA",
     "company": "Tesla",
+    "sector": "Consumer Cyclical",
+    "industry": "Auto Manufacturers",
     "keywords": ["musk", "ev", "robotaxi"]
   },
   {
     "ticker": "MSFT",
     "company": "Microsoft",
+    "sector": "Technology",
+    "industry": "Software - Infrastructure",
     "keywords": ["azure", "copilot", "openai"]
   },
   {
     "ticker": "AMZN",
     "company": "Amazon",
+    "sector": "Consumer Cyclical",
+    "industry": "Internet Retail",
     "keywords": ["aws", "prime", "andy jassy"]
+  },
+  {
+    "ticker": "META",
+    "company": "Meta Platforms",
+    "sector": "Communication Services",
+    "industry": "Internet Content & Information",
+    "keywords": ["facebook", "instagram", "threads", "zuckerberg"]
+  },
+  {
+    "ticker": "GOOGL",
+    "company": "Alphabet",
+    "sector": "Communication Services",
+    "industry": "Internet Content & Information",
+    "keywords": ["google", "youtube", "gemini", "search"]
+  },
+  {
+    "ticker": "AMD",
+    "company": "Advanced Micro Devices",
+    "sector": "Technology",
+    "industry": "Semiconductors",
+    "keywords": ["ryzen", "epyc", "mi300", "lisa su"]
+  },
+  {
+    "ticker": "AVGO",
+    "company": "Broadcom",
+    "sector": "Technology",
+    "industry": "Semiconductors",
+    "keywords": ["vmware", "semiconductor", "networking", "hock tan"]
+  },
+  {
+    "ticker": "NFLX",
+    "company": "Netflix",
+    "sector": "Communication Services",
+    "industry": "Entertainment",
+    "keywords": ["streaming", "subscribers", "ads", "password sharing"]
+  },
+  {
+    "ticker": "JPM",
+    "company": "JPMorgan Chase",
+    "sector": "Financial Services",
+    "industry": "Banks - Diversified",
+    "keywords": ["jamie dimon", "net interest income", "banking", "credit"]
+  },
+  {
+    "ticker": "BAC",
+    "company": "Bank of America",
+    "sector": "Financial Services",
+    "industry": "Banks - Diversified",
+    "keywords": ["moynihan", "consumer banking", "net interest income", "deposits"]
+  },
+  {
+    "ticker": "XOM",
+    "company": "Exxon Mobil",
+    "sector": "Energy",
+    "industry": "Oil & Gas Integrated",
+    "keywords": ["oil", "permian", "lng", "upstream"]
+  },
+  {
+    "ticker": "CVX",
+    "company": "Chevron",
+    "sector": "Energy",
+    "industry": "Oil & Gas Integrated",
+    "keywords": ["oil", "hess", "permian", "refining"]
+  },
+  {
+    "ticker": "WMT",
+    "company": "Walmart",
+    "sector": "Consumer Defensive",
+    "industry": "Discount Stores",
+    "keywords": ["ecommerce", "sam's club", "grocery", "consumer spending"]
+  },
+  {
+    "ticker": "COST",
+    "company": "Costco Wholesale",
+    "sector": "Consumer Defensive",
+    "industry": "Discount Stores",
+    "keywords": ["membership", "warehouse", "same-store sales", "consumer"]
+  },
+  {
+    "ticker": "LLY",
+    "company": "Eli Lilly",
+    "sector": "Healthcare",
+    "industry": "Drug Manufacturers - General",
+    "keywords": ["zepbound", "mounjaro", "obesity", "glp-1"]
+  },
+  {
+    "ticker": "UNH",
+    "company": "UnitedHealth Group",
+    "sector": "Healthcare",
+    "industry": "Healthcare Plans",
+    "keywords": ["medicare advantage", "optum", "medical costs", "insurance"]
+  },
+  {
+    "ticker": "PLTR",
+    "company": "Palantir Technologies",
+    "sector": "Technology",
+    "industry": "Software - Infrastructure",
+    "keywords": ["aip", "government contracts", "foundry", "karp"]
+  },
+  {
+    "ticker": "SMCI",
+    "company": "Super Micro Computer",
+    "sector": "Technology",
+    "industry": "Computer Hardware",
+    "keywords": ["server", "ai servers", "liquid cooling", "rack scale"]
+  },
+  {
+    "ticker": "COIN",
+    "company": "Coinbase Global",
+    "sector": "Financial Services",
+    "industry": "Financial Data & Stock Exchanges",
+    "keywords": ["bitcoin", "crypto", "exchange", "staking"]
+  },
+  {
+    "ticker": "BA",
+    "company": "Boeing",
+    "sector": "Industrials",
+    "industry": "Aerospace & Defense",
+    "keywords": ["737 max", "faa", "aircraft deliveries", "defense"]
   }
 ]
