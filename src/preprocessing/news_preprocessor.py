@@ -95,7 +95,9 @@ RELATED_CONTEXT_PATTERNS = (
 )
 
 SOURCE_PRIORITY = {
-    "yahoo_finance": 90,
+    "tradingview": 96,
+    "stocktwits": 88,
+    "yahoo_finance": 62,
     "prnewswire": 85,
     "globenewswire": 85,
     "accessnewswire": 85,
@@ -347,10 +349,12 @@ def score_row_relevance(row: dict[str, Any], profile: TickerProfile) -> dict[str
     score += len(matched_generic_title) * 1.0
     score += len(matched_generic_summary) * 0.5
 
-    if row.get("source_key") == "yahoo_finance":
+    if row.get("source_key") == "tradingview":
         score += 2.0
-    if row.get("source_key") in {"prnewswire", "globenewswire", "accessnewswire"}:
+    if row.get("source_key") in {"stocktwits", "prnewswire", "globenewswire", "accessnewswire"}:
         score += 1.0
+    if row.get("source_key") == "yahoo_finance":
+        score -= 0.5
     if row.get("source_key") == "finviz":
         score -= 1.0
 

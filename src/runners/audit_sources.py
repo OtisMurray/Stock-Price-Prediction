@@ -78,12 +78,16 @@ def audit_baseline_sources(*, ticker: str, limit: int) -> list[dict[str, Any]]:
     return results
 
 
-def audit_structured_sources(*, limit: int) -> list[dict[str, Any]]:
+def audit_structured_sources(*, ticker: str, limit: int) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for source_key in PUBLIC_STRUCTURED_SOURCE_KEYS:
         source = STRUCTURED_SOURCES[source_key]
         try:
-            headlines = collect_structured_headlines(source_key, limit=limit)
+            headlines = collect_structured_headlines(
+                source_key,
+                limit=limit,
+                ticker=ticker if source.is_ticker_specific else "",
+            )
             results.append(
                 {
                     "source_group": "structured_news",
@@ -142,7 +146,7 @@ def print_results(rows: list[dict[str, Any]]) -> None:
 def main() -> None:
     args = parse_args()
     rows = audit_baseline_sources(ticker=args.ticker.upper(), limit=args.limit)
-    rows.extend(audit_structured_sources(limit=args.limit))
+    rows.extend(audit_structured_sources(ticker=args.ticker.upper(), limit=args.limit))
     print_results(rows)
 
     if args.json_out:

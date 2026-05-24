@@ -21,6 +21,21 @@ class StructuredSource:
     use_rss_first: bool = False
     json_url: str = ""
     json_query: dict[str, str] = field(default_factory=dict)
+    is_ticker_specific: bool = False
+    collection_url_template: str = ""
+
+    def build_collection_url(self, *, ticker: str = "", exchange: str = "", symbol: str = "") -> str:
+        template = self.collection_url_template or self.collection_url
+        if any(token in template for token in ("{ticker}", "{exchange}", "{symbol}")):
+            if not ticker and not symbol:
+                raise ValueError(f"{self.name} requires a ticker symbol.")
+            resolved_symbol = symbol or f"{exchange}:{ticker.upper()}".strip(":")
+            return template.format(
+                ticker=ticker.upper(),
+                exchange=exchange.upper(),
+                symbol=resolved_symbol,
+            )
+        return template
 
 
 STRUCTURED_SOURCES: dict[str, StructuredSource] = {
@@ -115,10 +130,39 @@ STRUCTURED_SOURCES: dict[str, StructuredSource] = {
         ),
         notes="Useful aggregator and cross-check source, but not the only source because of timing lag.",
     ),
+    "tradingview": StructuredSource(
+        key="tradingview",
+        name="TradingView News Flow",
+        homepage_url="https://www.tradingview.com/",
+        collection_url="https://www.tradingview.com/news-flow/",
+        collection_url_template="https://www.tradingview.com/news-flow/?symbol={symbol}",
+        access_type="Public symbol news pages and public news-mediator endpoint",
+        first_method="TradingView symbol news mediator API",
+        parser_type="JSON API with impersonated page fallback",
+        is_ticker_specific=True,
+        notes=(
+            "Primary ticker-specific source. Uses TradingView's public symbol-news flow through "
+            "the news-mediator endpoint so articles surface earlier than Yahoo Finance RSS."
+        ),
+    ),
+    "stocktwits": StructuredSource(
+        key="stocktwits",
+        name="Stocktwits News",
+        homepage_url="https://stocktwits.com/",
+        collection_url="https://stocktwits.com/",
+        collection_url_template="https://stocktwits.com/symbol/{ticker}",
+        access_type="Public symbol page with embedded article JSON",
+        first_method="Embedded __NEXT_DATA__ article payload",
+        parser_type="Embedded JSON",
+        is_ticker_specific=True,
+        notes="Supplementary ticker-specific source pulled from public Stocktwits symbol pages.",
+    ),
 }
 
 
 PUBLIC_STRUCTURED_SOURCE_KEYS = [
+    "tradingview",
+    "stocktwits",
     "prnewswire",
     "globenewswire",
     "accessnewswire",

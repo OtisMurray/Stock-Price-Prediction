@@ -60,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cooldown-seconds",
         type=int,
-        default=120,
+        default=90,
         help="Minimum number of seconds between manual refreshes.",
     )
     parser.add_argument(

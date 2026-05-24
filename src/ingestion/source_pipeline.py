@@ -66,6 +66,8 @@ DEFAULT_SOURCE_CACHE_TTLS = {
     "baseline_rss:sec_press_releases": 180,
     "baseline_rss:prnewswire_all_news": 120,
     "baseline_rss:yahoo_finance": 45,
+    "structured_news:tradingview": 45,
+    "structured_news:stocktwits": 90,
     "structured_news:prnewswire": 120,
     "structured_news:globenewswire": 300,
     "structured_news:accessnewswire": 240,
@@ -79,6 +81,8 @@ SOURCE_REFRESH_TIERS = {
     "baseline_rss:sec_press_releases": "slow",
     "baseline_rss:prnewswire_all_news": "medium",
     "baseline_rss:yahoo_finance": "fast",
+    "structured_news:tradingview": "fast",
+    "structured_news:stocktwits": "medium",
     "structured_news:prnewswire": "medium",
     "structured_news:globenewswire": "slow",
     "structured_news:accessnewswire": "slow",
@@ -90,12 +94,20 @@ SOURCE_REFRESH_TIERS = {
 def _cache_ttl_for_key(cache_key: str) -> int:
     if cache_key.startswith("baseline_rss:yahoo_finance:"):
         return DEFAULT_SOURCE_CACHE_TTLS["baseline_rss:yahoo_finance"]
+    if cache_key.startswith("structured_news:tradingview:"):
+        return DEFAULT_SOURCE_CACHE_TTLS["structured_news:tradingview"]
+    if cache_key.startswith("structured_news:stocktwits:"):
+        return DEFAULT_SOURCE_CACHE_TTLS["structured_news:stocktwits"]
     return DEFAULT_SOURCE_CACHE_TTLS.get(cache_key, 0)
 
 
 def _source_tier_for_key(cache_key: str) -> str:
     if cache_key.startswith("baseline_rss:yahoo_finance:"):
         return SOURCE_REFRESH_TIERS["baseline_rss:yahoo_finance"]
+    if cache_key.startswith("structured_news:tradingview:"):
+        return SOURCE_REFRESH_TIERS["structured_news:tradingview"]
+    if cache_key.startswith("structured_news:stocktwits:"):
+        return SOURCE_REFRESH_TIERS["structured_news:stocktwits"]
     return SOURCE_REFRESH_TIERS.get(cache_key, "medium")
 
 
@@ -181,10 +193,12 @@ def collect_candidate_rows(
     if not skip_structured:
         active_structured_keys = structured_source_keys or list(PUBLIC_STRUCTURED_SOURCE_KEYS)
         for source_key in active_structured_keys:
+            source = STRUCTURED_SOURCES[source_key]
             try:
                 headlines = collect_structured_headlines(
                     source_key,
                     limit=None if structured_limit == 0 else structured_limit,
+                    ticker=ticker if source.is_ticker_specific else "",
                 )
                 for headline in headlines:
                     if not include_seen and headline.link in seen_links:
@@ -319,6 +333,42 @@ def collect_watchlist_candidate_rows(
             ).to_dict()
         )
 
+    def record_cached_ticker_structured_rows(
+        source_key: str,
+        ticker: str,
+        cached_rows: list[dict[str, Any]],
+        cache_age_seconds: float,
+    ) -> None:
+        matched_total = 0
+        fetched_total = 0
+        keywords = keywords_by_ticker[ticker]
+        for row in cached_rows:
+            link = str(row.get("link", ""))
+            if not include_seen and link in seen_links:
+                continue
+            fetched_total += 1
+            if row_matcher([row.get("title", ""), row.get("summary", "")], keywords):
+                rows_by_ticker[ticker].append(dict(row))
+                matched_total += 1
+                if link:
+                    newly_seen.add(link)
+        source = STRUCTURED_SOURCES[source_key]
+        source_health.append(
+            SourceHealthRecord(
+                source_group="structured_news",
+                source_key=source_key,
+                source_name=source.name,
+                ok=True,
+                elapsed_seconds=0.0,
+                fetched_count=fetched_total,
+                matched_count=matched_total,
+                ticker=ticker,
+                collected_at=_utc_now_iso(),
+                cache_hit=True,
+                cache_age_seconds=round(cache_age_seconds, 1),
+            ).to_dict()
+        )
+
     def fetch_general_rss(source_key: str) -> tuple[str, list[Any], float]:
         started = time.perf_counter()
         articles = fetch_rss_source(
@@ -344,6 +394,15 @@ def collect_watchlist_candidate_rows(
             limit=None if structured_limit == 0 else structured_limit,
         )
         return source_key, headlines, time.perf_counter() - started
+
+    def fetch_ticker_structured(source_key: str, ticker: str) -> tuple[str, str, list[Any], float]:
+        started = time.perf_counter()
+        headlines = collect_structured_headlines(
+            source_key,
+            limit=None if structured_limit == 0 else structured_limit,
+            ticker=ticker,
+        )
+        return source_key, ticker, headlines, time.perf_counter() - started
 
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = []
@@ -393,24 +452,52 @@ def collect_watchlist_candidate_rows(
 
         if not skip_structured:
             for source_key in struct_keys:
-                cache_key = f"structured_news:{source_key}"
-                cached_rows, cache_age_seconds = get_cached_rows(
-                    cache_payload,
-                    cache_key=cache_key,
-                    max_age_seconds=_cache_ttl_for_key(cache_key),
-                    now_epoch=now_epoch,
-                )
-                if cached_rows is not None:
-                    record_cached_structured_rows(source_key, cached_rows, cache_age_seconds)
-                    continue
-                futures.append(
-                    {
-                        "type": "structured",
-                        "source_key": source_key,
-                        "ticker": "",
-                        "future": executor.submit(fetch_structured, source_key),
-                    }
-                )
+                source = STRUCTURED_SOURCES[source_key]
+                if source.is_ticker_specific:
+                    for entry in entries:
+                        ticker = str(entry.get("ticker", "")).upper()
+                        cache_key = f"structured_news:{source_key}:{ticker}"
+                        cached_rows, cache_age_seconds = get_cached_rows(
+                            cache_payload,
+                            cache_key=cache_key,
+                            max_age_seconds=_cache_ttl_for_key(cache_key),
+                            now_epoch=now_epoch,
+                        )
+                        if cached_rows is not None:
+                            record_cached_ticker_structured_rows(
+                                source_key,
+                                ticker,
+                                cached_rows,
+                                cache_age_seconds,
+                            )
+                            continue
+                        futures.append(
+                            {
+                                "type": "ticker_structured",
+                                "source_key": source_key,
+                                "ticker": ticker,
+                                "future": executor.submit(fetch_ticker_structured, source_key, ticker),
+                            }
+                        )
+                else:
+                    cache_key = f"structured_news:{source_key}"
+                    cached_rows, cache_age_seconds = get_cached_rows(
+                        cache_payload,
+                        cache_key=cache_key,
+                        max_age_seconds=_cache_ttl_for_key(cache_key),
+                        now_epoch=now_epoch,
+                    )
+                    if cached_rows is not None:
+                        record_cached_structured_rows(source_key, cached_rows, cache_age_seconds)
+                        continue
+                    futures.append(
+                        {
+                            "type": "structured",
+                            "source_key": source_key,
+                            "ticker": "",
+                            "future": executor.submit(fetch_structured, source_key),
+                        }
+                    )
 
         for task in futures:
             future_type = task["type"]
@@ -496,6 +583,60 @@ def collect_watchlist_candidate_rows(
                     source_health.append(
                         SourceHealthRecord(
                             source_group="baseline_rss",
+                            source_key=source_key,
+                            source_name=source_name,
+                            ok=False,
+                            elapsed_seconds=0.0,
+                            fetched_count=0,
+                            matched_count=0,
+                            ticker=ticker,
+                            error=str(exc),
+                            collected_at=_utc_now_iso(),
+                        ).to_dict()
+                    )
+            elif future_type == "ticker_structured":
+                try:
+                    source_key, ticker, headlines, elapsed = future.result()
+                    source = STRUCTURED_SOURCES[source_key]
+                    cache_key = f"structured_news:{source_key}:{ticker}"
+                    cached_source_rows: list[dict[str, Any]] = []
+                    matched_total = 0
+                    fetched_total = 0
+                    keywords = keywords_by_ticker[ticker]
+                    for headline in headlines:
+                        row = _headline_to_row(headline)
+                        cached_source_rows.append(dict(row))
+                        if not include_seen and headline.link in seen_links:
+                            continue
+                        fetched_total += 1
+                        if row_matcher([headline.title, headline.summary], keywords):
+                            rows_by_ticker[ticker].append(row)
+                            matched_total += 1
+                            if headline.link:
+                                newly_seen.add(headline.link)
+                    set_cached_rows(cache_payload, cache_key=cache_key, rows=cached_source_rows)
+                    cache_dirty = True
+                    source_health.append(
+                        SourceHealthRecord(
+                            source_group="structured_news",
+                            source_key=source_key,
+                            source_name=source.name,
+                            ok=True,
+                            elapsed_seconds=round(elapsed, 3),
+                            fetched_count=fetched_total,
+                            matched_count=matched_total,
+                            ticker=ticker,
+                            collected_at=_utc_now_iso(),
+                            cache_hit=False,
+                        ).to_dict()
+                    )
+                except Exception as exc:
+                    source_name = STRUCTURED_SOURCES[source_key].name if source_key in STRUCTURED_SOURCES else "structured_news"
+                    label = f"{source_name} [{ticker}]" if ticker else source_name
+                    failures.append(f"{label}: {exc}")
+                    source_health.append(
+                        SourceHealthRecord(
+                            source_group="structured_news",
                             source_key=source_key,
                             source_name=source_name,
                             ok=False,

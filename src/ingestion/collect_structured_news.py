@@ -40,6 +40,11 @@ def parse_args() -> argparse.Namespace:
         help="Maximum headlines to return per source. Use 0 for no explicit cap.",
     )
     parser.add_argument(
+        "--ticker",
+        default="AAPL",
+        help="Ticker used for ticker-specific sources such as TradingView and Stocktwits.",
+    )
+    parser.add_argument(
         "--json-out",
         default="",
         help="Optional JSON output path.",
@@ -71,7 +76,12 @@ def main() -> None:
         print(f"Source: {STRUCTURED_SOURCES[source_key].name} ({source_key})")
         try:
             limit = None if args.limit == 0 else args.limit
-            headlines = collect_structured_headlines(source_key, limit=limit)
+            source = STRUCTURED_SOURCES[source_key]
+            headlines = collect_structured_headlines(
+                source_key,
+                limit=limit,
+                ticker=args.ticker.upper() if source.is_ticker_specific else "",
+            )
         except Exception as exc:
             print(f"Collection failed: {exc}")
             continue

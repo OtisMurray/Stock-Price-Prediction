@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from html import unescape
 import json
 import re
@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 
 from .fetch_source_url import fetch_url_with_fallback
 from .structured_sources import StructuredSource, get_structured_source
+from .timestamp_utils import is_us_equity_market_open, parse_published_datetime
 
 
 @dataclass(slots=True)
@@ -54,9 +55,69 @@ DATEISH_RE = re.compile(
     re.IGNORECASE,
 )
 
+NEXT_DATA_RE = re.compile(
+    r'<script[^>]+id="__NEXT_DATA__"[^>]*>\s*(?P<payload>\{.*?\})\s*</script>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+KNOWN_NYSE_TICKERS = {
+    "ABBV",
+    "BA",
+    "BAC",
+    "CAT",
+    "COST",
+    "CRM",
+    "CVX",
+    "DE",
+    "DIS",
+    "GE",
+    "GS",
+    "HD",
+    "JPM",
+    "KO",
+    "LLY",
+    "LOW",
+    "MA",
+    "MCD",
+    "MRK",
+    "MS",
+    "ORCL",
+    "PEP",
+    "PFE",
+    "PG",
+    "SBUX",
+    "SHOP",
+    "T",
+    "TGT",
+    "TSM",
+    "UBER",
+    "UNH",
+    "V",
+    "WMT",
+    "XOM",
+}
+
+KNOWN_AMEX_TICKERS = {
+    "SPY",
+    "QQQ",
+    "DIA",
+    "IWM",
+}
+
+FINVIZ_MARKET_WINDOW_MINUTES = 30
+
 
 def _normalize_text(text: str) -> str:
     return " ".join(unescape(text or "").split())
+
+
+def _exchange_candidates_for_ticker(ticker: str) -> tuple[str, ...]:
+    normalized = ticker.upper()
+    if normalized in KNOWN_NYSE_TICKERS:
+        return ("NYSE", "NASDAQ", "AMEX")
+    if normalized in KNOWN_AMEX_TICKERS:
+        return ("AMEX", "NASDAQ", "NYSE")
+    return ("NASDAQ", "NYSE", "AMEX")
 
 
 def _is_probable_headline(text: str) -> bool:
@@ -115,6 +176,16 @@ def _extract_published_from_anchor(source: StructuredSource, anchor) -> str:
         current = current.parent
 
     return ""
+
+
+def _should_keep_finviz_headline(published: str, *, collected_at: str) -> bool:
+    if not is_us_equity_market_open():
+        return True
+    published_dt = parse_published_datetime(published, collected_at=collected_at)
+    if published_dt is None:
+        return True
+    collected_dt = parse_published_datetime(collected_at, collected_at=collected_at) or datetime.now(timezone.utc)
+    return published_dt >= collected_dt - timedelta(minutes=FINVIZ_MARKET_WINDOW_MINUTES)
 
 
 def _headline_from_feed(source: StructuredSource, limit: int | None) -> list[StructuredHeadline]:
@@ -285,6 +356,7 @@ def _headline_from_html(source: StructuredSource, limit: int | None) -> list[Str
     soup = BeautifulSoup(page.html, "html.parser")
     results: list[StructuredHeadline] = []
     seen_links: set[str] = set()
+    collected_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
     for anchor in _candidate_anchors(source, soup):
         href = anchor.get("href")
@@ -304,6 +376,8 @@ def _headline_from_html(source: StructuredSource, limit: int | None) -> list[Str
         parent_text = _normalize_text(anchor.parent.get_text(" ", strip=True)) if anchor.parent else ""
         summary = parent_text if parent_text != title else ""
         published = _extract_published_from_anchor(source, anchor)
+        if source.key == "finviz" and not _should_keep_finviz_headline(published, collected_at=collected_at):
+            continue
 
         results.append(
             StructuredHeadline(
@@ -323,12 +397,137 @@ def _headline_from_html(source: StructuredSource, limit: int | None) -> list[Str
     return results
 
 
-def collect_structured_headlines(source_key: str, limit: int | None = 15) -> list[StructuredHeadline]:
+def _headline_from_stocktwits_symbol(
+    source: StructuredSource,
+    *,
+    ticker: str,
+    limit: int | None,
+) -> list[StructuredHeadline]:
+    page = fetch_url_with_fallback(source.build_collection_url(ticker=ticker))
+    match = NEXT_DATA_RE.search(page.html)
+    if not match:
+        raise RuntimeError("Stocktwits symbol page did not expose __NEXT_DATA__ article payload.")
+
+    payload = json.loads(match.group("payload"))
+    articles = (
+        payload.get("props", {})
+        .get("pageProps", {})
+        .get("initialData", {})
+        .get("articles", [])
+    )
+    headlines: list[StructuredHeadline] = []
+
+    for article in articles:
+        title = _normalize_text(article.get("headline", ""))
+        if not _is_probable_headline(title):
+            continue
+        link = (
+            article.get("canonical_url")
+            or article.get("url")
+            or (
+                f"{source.homepage_url.rstrip('/')}/news-articles/{article.get('url_slug', '').lstrip('/')}"
+                if article.get("url_slug")
+                else ""
+            )
+        )
+        headlines.append(
+            StructuredHeadline(
+                source_key=source.key,
+                source_name=source.name,
+                title=title,
+                link=link,
+                published=str(article.get("created_at", "")),
+                summary=_normalize_text(article.get("summary", "")),
+                collection_method="embedded_json",
+                notes=source.notes,
+            )
+        )
+        if limit and len(headlines) >= limit:
+            break
+
+    return headlines
+
+
+def _tradingview_mediator_url(symbol: str) -> str:
+    query = urlencode(
+        [
+            ("filter", "lang:en"),
+            ("filter", "provider:tradingview"),
+            ("filter", f"symbol:{symbol}"),
+            ("client", "web"),
+            ("user_prostatus", "non_pro"),
+        ],
+        doseq=True,
+    )
+    return f"https://news-mediator.tradingview.com/public/view/v1/symbol?{query}"
+
+
+def _headline_from_tradingview_symbol(
+    source: StructuredSource,
+    *,
+    ticker: str,
+    limit: int | None,
+) -> list[StructuredHeadline]:
+    errors: list[str] = []
+    for exchange in _exchange_candidates_for_ticker(ticker):
+        symbol = f"{exchange}:{ticker.upper()}"
+        try:
+            payload = json.loads(fetch_url_with_fallback(_tradingview_mediator_url(symbol)).html)
+        except Exception as exc:
+            errors.append(f"{symbol}: {exc}")
+            continue
+
+        items = payload.get("items", [])
+        headlines: list[StructuredHeadline] = []
+        for item in items:
+            title = _normalize_text(item.get("title", ""))
+            if not _is_probable_headline(title):
+                continue
+            story_path = str(item.get("storyPath", ""))
+            link = item.get("link") or urljoin(source.homepage_url, story_path)
+            provider_name = _normalize_text(item.get("provider", {}).get("name", "TradingView"))
+            headlines.append(
+                StructuredHeadline(
+                    source_key=source.key,
+                    source_name=source.name,
+                    title=title,
+                    link=link,
+                    published=str(item.get("published", "")),
+                    summary=provider_name,
+                    collection_method="json_api",
+                    notes=f"{source.notes} Provider: {provider_name}.",
+                )
+            )
+            if limit and len(headlines) >= limit:
+                break
+
+        if headlines:
+            return headlines
+
+    joined = "; ".join(errors) if errors else "no TradingView headlines returned"
+    raise RuntimeError(f"TradingView symbol flow failed for {ticker.upper()}: {joined}")
+
+
+def collect_structured_headlines(
+    source_key: str,
+    limit: int | None = 15,
+    *,
+    ticker: str = "",
+) -> list[StructuredHeadline]:
     source = get_structured_source(source_key)
     if source.is_premium:
         raise RuntimeError(
             f"{source.name} is marked as a premium source and is not configured for public headline collection."
         )
+
+    if source.is_ticker_specific:
+        if not ticker:
+            raise RuntimeError(f"{source.name} requires a ticker symbol.")
+        if source.key == "tradingview":
+            return _headline_from_tradingview_symbol(source, ticker=ticker, limit=limit)
+        if source.key == "stocktwits":
+            return _headline_from_stocktwits_symbol(source, ticker=ticker, limit=limit)
+        return _headline_from_html(source, limit)
 
     if source.use_rss_first:
         return _headline_from_feed(source, limit)

@@ -57,7 +57,6 @@ RSS_SOURCES: dict[str, RSSSource] = {
 }
 
 DEFAULT_BASELINE_SOURCE_KEYS = [
-    "yahoo_finance",
     "marketwatch_topstories",
     "marketwatch_marketpulse",
     "sec_press_releases",

@@ -312,6 +312,42 @@ APP_HTML = """<!DOCTYPE html>
       background: rgba(22, 101, 52, 0.12);
       color: var(--new);
     }
+    .badge.earnings {
+      background: rgba(245, 158, 11, 0.16);
+      color: #9a5b00;
+    }
+    .quick-filter-row {
+      margin-top: 12px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .quick-filter-label {
+      color: var(--muted);
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .quick-filter-chip {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 12px;
+      background: white;
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 700;
+      font-family: Arial, Helvetica, sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .quick-filter-chip.active {
+      background: rgba(245, 158, 11, 0.16);
+      border-color: rgba(245, 158, 11, 0.45);
+      color: #9a5b00;
+    }
     .sidebar-card {
       background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(247,250,245,0.94));
       border: 1px solid var(--line);
@@ -455,6 +491,10 @@ APP_HTML = """<!DOCTYPE html>
       }).format(new Date(parsed));
     }
 
+    function isEarningsEvent(eventType) {
+      return String(eventType || "").toLowerCase().includes("earnings");
+    }
+
     function getTickerStoryRows(tickerDetail) {
       if (!tickerDetail?.ticker) return [];
       const rows = [];
@@ -468,6 +508,7 @@ APP_HTML = """<!DOCTYPE html>
           rows.push({
             ...row,
             bucketLabel,
+            is_earnings: isEarningsEvent(row.event_type),
             sortSignal: Number(row.signal_strength || 0),
             _key: `${bucketKey}-${row.link || row.title}-${index}`,
           });
@@ -533,6 +574,7 @@ APP_HTML = """<!DOCTYPE html>
                     <div className="headline-line">
                       <a href={row.link} target="_blank" rel="noreferrer">{row.title}</a>
                       {row.is_new ? <span className="badge new">NEW</span> : null}
+                      {row.is_earnings ? <span className="badge earnings">Earnings</span> : null}
                     </div>
                     <div className="headline-sub">{row.summary || ""}</div>
                     <div className="headline-meta">
@@ -749,6 +791,7 @@ APP_HTML = """<!DOCTYPE html>
                 <span><strong>Source:</strong> {row.source_name || "Unknown"}</span>
                 <span><strong>Signal:</strong> {row.signal_strength ?? 0}</span>
                 <span><strong>Published:</strong> {row.published || "Not recorded"}</span>
+                {row.is_earnings ? <span className="badge earnings">Earnings</span> : null}
               </div>
             </article>
           ))}
@@ -940,6 +983,8 @@ APP_HTML = """<!DOCTYPE html>
             link: row.link,
             source_name: row.source_name,
             event_type: (row.event_types || [])[0] || "",
+            event_type_list: row.event_types || [],
+            is_earnings: (row.event_types || []).some((value) => isEarningsEvent(value)),
             signal_strength: Number(row.signal_strength || 0),
             signal_display: String(row.signal_strength ?? 0),
             published: row.published_display || row.published_raw || row.published_at || "",
@@ -957,7 +1002,15 @@ APP_HTML = """<!DOCTYPE html>
         });
 
         const sourceRows = marketRows.length ? marketRows : (state.feed_rows || []);
-        const filteredRows = sourceRows.filter((row) => {
+        const normalizedRows = sourceRows.map((row) => {
+          const eventTypeList = row.event_type_list || (row.event_type ? [row.event_type] : []);
+          return {
+            ...row,
+            event_type_list: eventTypeList,
+            is_earnings: Boolean(row.is_earnings) || eventTypeList.some((value) => isEarningsEvent(value)),
+          };
+        });
+        const filteredRows = normalizedRows.filter((row) => {
           const searchBlob = [
             row.ticker,
             row.company,
@@ -967,6 +1020,10 @@ APP_HTML = """<!DOCTYPE html>
             row.title,
           ].join(" ").toLowerCase();
           const matchedTickers = row.matched_tickers || String(row.ticker || "").split(", ").filter(Boolean);
+          const eventTypeMatches = !filters.eventType
+            || (filters.eventType === "__earnings__"
+              ? row.is_earnings
+              : row.event_type === filters.eventType || (row.event_type_list || []).includes(filters.eventType));
           return (
             (!filters.search || searchBlob.includes(filters.search.toLowerCase())) &&
             (!filters.ticker || matchedTickers.includes(filters.ticker)) &&
@@ -974,7 +1031,7 @@ APP_HTML = """<!DOCTYPE html>
             (!filters.industry || row.industry === filters.industry) &&
             (!filters.source || row.source_name === filters.source) &&
             (!filters.bucket || row.bucket_label === filters.bucket) &&
-            (!filters.eventType || row.event_type === filters.eventType)
+            eventTypeMatches
           );
         });
         const rows = [...filteredRows];
@@ -1181,11 +1238,23 @@ APP_HTML = """<!DOCTYPE html>
               </div>
             </div>
 
+            <div className="quick-filter-row">
+              <span className="quick-filter-label">Quick Views</span>
+              <button
+                type="button"
+                className={`quick-filter-chip ${filters.eventType === "__earnings__" ? "active" : ""}`}
+                onClick={() => setFilter("eventType", filters.eventType === "__earnings__" ? "" : "__earnings__")}
+              >
+                Earnings News
+              </button>
+            </div>
+
             <div className="filter-grid" style={{ marginTop: 12, gridTemplateColumns: "1fr 1fr 1fr auto" }}>
               <div className="filter-field">
                 <label>Event Type</label>
                 <select value={filters.eventType} onChange={(e) => setFilter("eventType", e.target.value)}>
                   <option value="">All event types</option>
+                  <option value="__earnings__">All earnings news</option>
                   {(state.filters?.event_types || []).map((value) => <option key={value} value={value}>{value}</option>)}
                 </select>
               </div>
