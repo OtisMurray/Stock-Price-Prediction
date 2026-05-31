@@ -104,7 +104,15 @@ KNOWN_AMEX_TICKERS = {
     "IWM",
 }
 
+TRADINGVIEW_EXCHANGE_OVERRIDES = {
+    "GPW": ("GPW", "NASDAQ", "NYSE", "AMEX"),
+}
+
 FINVIZ_MARKET_WINDOW_MINUTES = 30
+TRADINGVIEW_MARKET_WINDOW_MINUTES = 30
+FAST_TICKER_FETCH_TIMEOUT_SECONDS = 4
+TRADINGVIEW_SYMBOL_EXCHANGE_CACHE: dict[str, str] = {}
+STOCKTWITS_UNSUPPORTED_TICKERS: set[str] = set()
 
 
 def _normalize_text(text: str) -> str:
@@ -113,6 +121,20 @@ def _normalize_text(text: str) -> str:
 
 def _exchange_candidates_for_ticker(ticker: str) -> tuple[str, ...]:
     normalized = ticker.upper()
+    cached_exchange = TRADINGVIEW_SYMBOL_EXCHANGE_CACHE.get(normalized)
+    if cached_exchange:
+        fallback = TRADINGVIEW_EXCHANGE_OVERRIDES.get(normalized)
+        if fallback:
+            ordered = [cached_exchange]
+            ordered.extend(exchange for exchange in fallback if exchange != cached_exchange)
+            return tuple(ordered)
+        if normalized in KNOWN_NYSE_TICKERS:
+            return (cached_exchange, "NYSE", "NASDAQ", "AMEX")
+        if normalized in KNOWN_AMEX_TICKERS:
+            return (cached_exchange, "AMEX", "NASDAQ", "NYSE")
+        return (cached_exchange, "NASDAQ", "NYSE", "AMEX")
+    if normalized in TRADINGVIEW_EXCHANGE_OVERRIDES:
+        return TRADINGVIEW_EXCHANGE_OVERRIDES[normalized]
     if normalized in KNOWN_NYSE_TICKERS:
         return ("NYSE", "NASDAQ", "AMEX")
     if normalized in KNOWN_AMEX_TICKERS:
@@ -186,6 +208,33 @@ def _should_keep_finviz_headline(published: str, *, collected_at: str) -> bool:
         return True
     collected_dt = parse_published_datetime(collected_at, collected_at=collected_at) or datetime.now(timezone.utc)
     return published_dt >= collected_dt - timedelta(minutes=FINVIZ_MARKET_WINDOW_MINUTES)
+
+
+def _should_keep_tradingview_headline(published: str, *, collected_at: str) -> bool:
+    if not is_us_equity_market_open():
+        return True
+    published_dt = parse_published_datetime(published, collected_at=collected_at)
+    if published_dt is None:
+        return True
+    collected_dt = parse_published_datetime(collected_at, collected_at=collected_at) or datetime.now(timezone.utc)
+    return published_dt >= collected_dt - timedelta(minutes=TRADINGVIEW_MARKET_WINDOW_MINUTES)
+
+
+def _is_transient_stocktwits_symbol_error(message: str) -> bool:
+    normalized = (message or "").lower()
+    transient_markers = (
+        "http error 403",
+        "403 client error",
+        "timed out",
+        "timeout",
+        "read operation timed out",
+        "temporarily unavailable",
+        "connection reset",
+        "connection aborted",
+        "connection refused",
+        "remote end closed connection",
+    )
+    return any(marker in normalized for marker in transient_markers)
 
 
 def _headline_from_feed(source: StructuredSource, limit: int | None) -> list[StructuredHeadline]:
@@ -273,24 +322,28 @@ def _headline_from_access_public_json(source: StructuredSource, limit: int | Non
     except ImportError as exc:
         raise RuntimeError("curl_cffi is required for ACCESS Newswire public API collection.") from exc
 
-    session = curl_requests.Session(impersonate="chrome124")
-    page = session.get(source.collection_url, timeout=20)
-    token_match = re.search(
-        r'<input name="AntiforgeryFieldname" type="hidden" value="([^"]+)"',
-        page.text,
-    )
-    if not token_match:
-        raise RuntimeError("ACCESS Newswire anti-forgery token was not found on the newsroom page.")
+    def build_session_headers() -> tuple[Any, dict[str, str]]:
+        session = curl_requests.Session(impersonate="chrome124")
+        page = session.get(source.collection_url, timeout=20)
+        token_match = re.search(
+            r'<input name="AntiforgeryFieldname" type="hidden" value="([^"]+)"',
+            page.text,
+        )
+        if not token_match:
+            raise RuntimeError("ACCESS Newswire anti-forgery token was not found on the newsroom page.")
 
-    csrf_token = token_match.group(1)
-    headers = {
-        "Referer": source.collection_url,
-        "Origin": source.homepage_url.rstrip("/"),
-        "X-Requested-With": "XMLHttpRequest",
-        "X-CSRF-TOKEN-HEADERNAME": csrf_token,
-        "account": "1",
-        "Accept": "application/json, text/plain, */*",
-    }
+        csrf_token = token_match.group(1)
+        headers = {
+            "Referer": source.collection_url,
+            "Origin": source.homepage_url.rstrip("/"),
+            "X-Requested-With": "XMLHttpRequest",
+            "X-CSRF-TOKEN-HEADERNAME": csrf_token,
+            "account": "1",
+            "Accept": "application/json, text/plain, */*",
+        }
+        return session, headers
+
+    session, headers = build_session_headers()
 
     page_size = 20
     if limit:
@@ -299,12 +352,28 @@ def _headline_from_access_public_json(source: StructuredSource, limit: int | Non
     headlines: list[StructuredHeadline] = []
     page_index = 0
     while True:
-        response = session.post(
-            f"{source.json_url}?pageindex={page_index}&pageSize={page_size}",
-            headers=headers,
-            timeout=20,
-        )
-        payload = response.json()
+        payload = None
+        for attempt in range(2):
+            response = session.post(
+                f"{source.json_url}?pageindex={page_index}&pageSize={page_size}",
+                headers=headers,
+                timeout=20,
+            )
+            try:
+                payload = response.json()
+                break
+            except ValueError:
+                # ACCESS occasionally returns an empty or malformed body for a
+                # valid newsroom request. Refresh the anti-forgery token once,
+                # then degrade to an empty result instead of marking the entire
+                # source as failed for a transient API hiccup.
+                if attempt == 0:
+                    session, headers = build_session_headers()
+                    continue
+                return headlines
+
+        if not isinstance(payload, dict):
+            return headlines
         data = payload.get("data", {})
         articles = data.get("articles", [])
         for article in articles:
@@ -403,10 +472,26 @@ def _headline_from_stocktwits_symbol(
     ticker: str,
     limit: int | None,
 ) -> list[StructuredHeadline]:
-    page = fetch_url_with_fallback(source.build_collection_url(ticker=ticker))
+    normalized_ticker = ticker.upper()
+    if normalized_ticker in STOCKTWITS_UNSUPPORTED_TICKERS:
+        return []
+    try:
+        page = fetch_url_with_fallback(
+            source.build_collection_url(ticker=ticker),
+            timeout=FAST_TICKER_FETCH_TIMEOUT_SECONDS,
+            methods=("curl_cffi", "urllib"),
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        if "HTTP 404" in message or "404 Client Error" in message:
+            STOCKTWITS_UNSUPPORTED_TICKERS.add(normalized_ticker)
+            return []
+        if _is_transient_stocktwits_symbol_error(message):
+            return []
+        raise
     match = NEXT_DATA_RE.search(page.html)
     if not match:
-        raise RuntimeError("Stocktwits symbol page did not expose __NEXT_DATA__ article payload.")
+        return []
 
     payload = json.loads(match.group("payload"))
     articles = (
@@ -452,7 +537,6 @@ def _tradingview_mediator_url(symbol: str) -> str:
     query = urlencode(
         [
             ("filter", "lang:en"),
-            ("filter", "provider:tradingview"),
             ("filter", f"symbol:{symbol}"),
             ("client", "web"),
             ("user_prostatus", "non_pro"),
@@ -469,40 +553,70 @@ def _headline_from_tradingview_symbol(
     limit: int | None,
 ) -> list[StructuredHeadline]:
     errors: list[str] = []
+    collected_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     for exchange in _exchange_candidates_for_ticker(ticker):
         symbol = f"{exchange}:{ticker.upper()}"
         try:
-            payload = json.loads(fetch_url_with_fallback(_tradingview_mediator_url(symbol)).html)
+            payload = json.loads(
+                fetch_url_with_fallback(
+                    _tradingview_mediator_url(symbol),
+                    timeout=FAST_TICKER_FETCH_TIMEOUT_SECONDS,
+                    methods=("curl_cffi", "urllib"),
+                ).html
+            )
         except Exception as exc:
             errors.append(f"{symbol}: {exc}")
             continue
 
         items = payload.get("items", [])
-        headlines: list[StructuredHeadline] = []
+        fresh_headlines: list[StructuredHeadline] = []
+        fallback_headlines: list[StructuredHeadline] = []
         for item in items:
             title = _normalize_text(item.get("title", ""))
             if not _is_probable_headline(title):
                 continue
+            published_text = str(item.get("published", ""))
             story_path = str(item.get("storyPath", ""))
             link = item.get("link") or urljoin(source.homepage_url, story_path)
             provider_name = _normalize_text(item.get("provider", {}).get("name", "TradingView"))
-            headlines.append(
-                StructuredHeadline(
-                    source_key=source.key,
-                    source_name=source.name,
-                    title=title,
-                    link=link,
-                    published=str(item.get("published", "")),
-                    summary=provider_name,
-                    collection_method="json_api",
-                    notes=f"{source.notes} Provider: {provider_name}.",
-                )
+            headline = StructuredHeadline(
+                source_key=source.key,
+                source_name=source.name,
+                title=title,
+                link=link,
+                published=published_text,
+                summary=provider_name,
+                collection_method="json_api",
+                notes=f"{source.notes} Provider: {provider_name}.",
             )
-            if limit and len(headlines) >= limit:
-                break
+            fallback_headlines.append(headline)
+            if _should_keep_tradingview_headline(published_text, collected_at=collected_at):
+                fresh_headlines.append(headline)
+            if limit and len(fallback_headlines) >= limit:
+                if len(fresh_headlines) >= limit:
+                    break
 
-        if headlines:
-            return headlines
+        if fresh_headlines:
+            TRADINGVIEW_SYMBOL_EXCHANGE_CACHE[ticker.upper()] = exchange
+            return fresh_headlines[:limit] if limit else fresh_headlines
+
+        if fallback_headlines:
+            TRADINGVIEW_SYMBOL_EXCHANGE_CACHE[ticker.upper()] = exchange
+            broader_rows: list[StructuredHeadline] = []
+            for headline in fallback_headlines[:limit] if limit else fallback_headlines:
+                broader_rows.append(
+                    StructuredHeadline(
+                        source_key=headline.source_key,
+                        source_name=headline.source_name,
+                        title=headline.title,
+                        link=headline.link,
+                        published=headline.published,
+                        summary=headline.summary,
+                        collection_method=headline.collection_method,
+                        notes=f"{headline.notes} Outside preferred {TRADINGVIEW_MARKET_WINDOW_MINUTES}-minute market-hours window.",
+                    )
+                )
+            return broader_rows
 
     joined = "; ".join(errors) if errors else "no TradingView headlines returned"
     raise RuntimeError(f"TradingView symbol flow failed for {ticker.upper()}: {joined}")

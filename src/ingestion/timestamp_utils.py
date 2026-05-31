@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, time, timezone
+from datetime import date, datetime, timedelta, time, timezone
 from email.utils import parsedate_to_datetime
 import re
 from zoneinfo import ZoneInfo
@@ -32,6 +32,94 @@ ABSOLUTE_FORMATS = (
 )
 
 US_MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def _nth_weekday_of_month(year: int, month: int, weekday: int, occurrence: int) -> date:
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + (occurrence - 1) * 7)
+
+
+def _last_weekday_of_month(year: int, month: int, weekday: int) -> date:
+    if month == 12:
+        current = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        current = date(year, month + 1, 1) - timedelta(days=1)
+    while current.weekday() != weekday:
+        current -= timedelta(days=1)
+    return current
+
+
+def _calculate_easter_sunday(year: int) -> date:
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
+    holiday = date(year, month, day)
+    if holiday.weekday() == 5:
+        return holiday - timedelta(days=1)
+    if holiday.weekday() == 6:
+        return holiday + timedelta(days=1)
+    return holiday
+
+
+def us_equity_market_holidays(year: int) -> set[date]:
+    holidays: set[date] = {
+        _observed_fixed_holiday(year, 1, 1),
+        _nth_weekday_of_month(year, 1, 0, 3),   # Martin Luther King Jr. Day
+        _nth_weekday_of_month(year, 2, 0, 3),   # Presidents Day
+        _calculate_easter_sunday(year) - timedelta(days=2),  # Good Friday
+        _last_weekday_of_month(year, 5, 0),     # Memorial Day
+        _observed_fixed_holiday(year, 7, 4),
+        _nth_weekday_of_month(year, 9, 0, 1),   # Labor Day
+        _nth_weekday_of_month(year, 11, 3, 4),  # Thanksgiving
+        _observed_fixed_holiday(year, 12, 25),
+    }
+    if year >= 2022:
+        holidays.add(_observed_fixed_holiday(year, 6, 19))  # Juneteenth
+    return holidays
+
+
+def is_us_equity_market_holiday(reference_date: date) -> bool:
+    return reference_date in us_equity_market_holidays(reference_date.year)
+
+
+def us_equity_market_session(reference_dt: datetime | None = None) -> str:
+    current_utc = reference_dt.astimezone(timezone.utc) if reference_dt else datetime.now(timezone.utc)
+    eastern_now = current_utc.astimezone(US_MARKET_TZ)
+    current_date = eastern_now.date()
+    if eastern_now.weekday() >= 5:
+        return "Market Closed (ET)"
+    if is_us_equity_market_holiday(current_date):
+        return "Market Holiday (ET)"
+
+    current_time = eastern_now.time()
+    premarket_start = time(4, 0)
+    market_open = time(9, 30)
+    market_close = time(16, 0)
+    after_hours_close = time(20, 0)
+
+    if premarket_start <= current_time < market_open:
+        return "Pre-Market (ET)"
+    if market_open <= current_time < market_close:
+        return "Market Open (ET)"
+    if market_close <= current_time < after_hours_close:
+        return "After Hours (ET)"
+    return "Market Closed (ET)"
 
 
 def _normalize_text(text: str) -> str:
@@ -111,13 +199,7 @@ def parse_published_datetime(raw_value: str, *, collected_at: str) -> datetime |
 
 
 def is_us_equity_market_open(reference_dt: datetime | None = None) -> bool:
-    current_utc = reference_dt.astimezone(timezone.utc) if reference_dt else datetime.now(timezone.utc)
-    eastern_now = current_utc.astimezone(US_MARKET_TZ)
-    if eastern_now.weekday() >= 5:
-        return False
-    market_open = time(9, 30)
-    market_close = time(16, 0)
-    return market_open <= eastern_now.time() < market_close
+    return us_equity_market_session(reference_dt) == "Market Open (ET)"
 
 
 def normalize_published_fields(raw_value: str, *, collected_at: str) -> dict[str, str]:

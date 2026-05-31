@@ -1,19 +1,29 @@
 from .sqlite_store import (
+    build_source_consistency_report,
+    fetch_cached_story_sentiment,
     fetch_latest_market_article_pool,
+    fetch_saved_translation,
     fetch_latest_ticker_snapshot,
     fetch_latest_ticker_universe,
     fetch_latest_watchlist_snapshot,
     fetch_ticker_source_history,
     initialize_database,
     persist_watchlist_snapshot,
+    prune_pipeline_history,
+    save_story_translation,
 )
 
 __all__ = [
+    "fetch_cached_story_sentiment",
     "fetch_latest_market_article_pool",
+    "fetch_saved_translation",
     "fetch_latest_ticker_snapshot",
     "fetch_latest_ticker_universe",
     "fetch_latest_watchlist_snapshot",
     "fetch_ticker_source_history",
+    "build_source_consistency_report",
     "initialize_database",
     "persist_watchlist_snapshot",
+    "prune_pipeline_history",
+    "save_story_translation",
 ]

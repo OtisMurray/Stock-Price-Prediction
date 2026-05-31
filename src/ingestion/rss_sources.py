@@ -10,6 +10,8 @@ class RSSSource:
     url_template: str
     is_ticker_specific: bool = False
     notes: str = ""
+    source_family: str = "structured"
+    quality_tier: str = "secondary_structured"
 
     def build_url(self, ticker: str | None = None) -> str:
         if "{ticker}" in self.url_template:
@@ -26,24 +28,28 @@ RSS_SOURCES: dict[str, RSSSource] = {
         url_template="https://finance.yahoo.com/rss/headline?s={ticker}",
         is_ticker_specific=True,
         notes="Ticker-specific Yahoo Finance RSS feed.",
+        quality_tier="supplemental_unstructured",
     ),
     "marketwatch_topstories": RSSSource(
         key="marketwatch_topstories",
         name="MarketWatch Top Stories",
         url_template="https://feeds.content.dowjones.io/public/rss/mw_topstories",
         notes="General MarketWatch feed; keyword filtering matters.",
+        quality_tier="secondary_structured",
     ),
     "marketwatch_marketpulse": RSSSource(
         key="marketwatch_marketpulse",
         name="MarketWatch MarketPulse",
         url_template="https://feeds.content.dowjones.io/public/rss/mw_marketpulse",
         notes="Short market-moving updates from MarketWatch.",
+        quality_tier="primary_structured",
     ),
     "sec_press_releases": RSSSource(
         key="sec_press_releases",
         name="SEC Press Releases",
         url_template="https://www.sec.gov/news/pressreleases.rss",
         notes="Official SEC press release RSS feed.",
+        quality_tier="secondary_structured",
     ),
     "prnewswire_all_news": RSSSource(
         key="prnewswire_all_news",
@@ -53,6 +59,7 @@ RSS_SOURCES: dict[str, RSSSource] = {
             "General PR Newswire feed. If the endpoint changes, confirm the latest raw "
             "RSS URL from PR Newswire's RSS directory."
         ),
+        quality_tier="secondary_structured",
     ),
 }
 

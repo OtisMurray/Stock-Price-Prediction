@@ -14,6 +14,7 @@ from src.ingestion.rss_collectors import fetch_rss_source
 from src.ingestion.rss_sources import DEFAULT_BASELINE_SOURCE_KEYS, RSS_SOURCES
 from src.ingestion.structured_collectors import collect_structured_headlines
 from src.ingestion.structured_sources import PUBLIC_STRUCTURED_SOURCE_KEYS, STRUCTURED_SOURCES
+from src.storage import build_source_consistency_report
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,6 +36,22 @@ def parse_args() -> argparse.Namespace:
         "--json-out",
         default="",
         help="Optional JSON output path for the audit results.",
+    )
+    parser.add_argument(
+        "--sqlite-db",
+        default="data/cache/watchlist_pipeline.db",
+        help="SQLite database path used for historical source consistency reporting.",
+    )
+    parser.add_argument(
+        "--recent-runs",
+        type=int,
+        default=12,
+        help="How many recent refresh runs to include in the historical consistency report.",
+    )
+    parser.add_argument(
+        "--history-report",
+        action="store_true",
+        help="Report source consistency and cadence recommendations from SQLite history instead of live fetch samples.",
     )
     return parser.parse_args()
 
@@ -143,8 +160,49 @@ def print_results(rows: list[dict[str, Any]]) -> None:
         print("-" * 70)
 
 
+def print_history_report(payload: dict[str, Any]) -> None:
+    print("Source Consistency Audit")
+    print("=" * 90)
+    print(f"Recent runs analyzed: {payload.get('runs_analyzed', 0)}")
+    print(f"Latest refresh: {payload.get('latest_generated_at', '-')}")
+    print("-" * 90)
+    for row in payload.get("sources", []):
+        print(f"{row['source_name']} [{row['recommended_tier']}]")
+        print(
+            f"Mode: {row['mode_label']} | Cadence: {row['recommended_cadence']} | "
+            f"Health: {row['health_rate']:.0%} | Avg primary/refresh: {row['avg_primary_story_count']:.1f}"
+        )
+        print(
+            f"Primary refresh rate: {row['primary_refresh_rate']:.0%} | "
+            f"Avg new primary/refresh: {row['avg_new_primary_story_count']:.1f} | "
+            f"Avg elapsed: {row['avg_elapsed_seconds']:.3f}s"
+        )
+        print(
+            f"Latest primary stories: {row['latest_primary_story_count']} | "
+            f"Latest new primary: {row['latest_new_primary_story_count']} | "
+            f"Matched total: {row['matched_total']}"
+        )
+        if row.get("outlier_refreshes_excluded"):
+            print(f"Excluded outlier runs: {', '.join(str(value) for value in row['outlier_refreshes_excluded'])}")
+        print(f"Why: {row['rationale']}")
+        print("-" * 90)
+
+
 def main() -> None:
     args = parse_args()
+    if args.history_report:
+        payload = build_source_consistency_report(
+            args.sqlite_db,
+            recent_runs=args.recent_runs,
+        )
+        print_history_report(payload)
+        if args.json_out:
+            output_path = Path(args.json_out)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            print(f"Saved source history audit to {output_path}")
+        return
+
     rows = audit_baseline_sources(ticker=args.ticker.upper(), limit=args.limit)
     rows.extend(audit_structured_sources(ticker=args.ticker.upper(), limit=args.limit))
     print_results(rows)

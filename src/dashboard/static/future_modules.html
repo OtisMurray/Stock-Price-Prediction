@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Future Modules</title>
+  <style>
+    :root {
+      --bg: #f3f5ef;
+      --panel: #fffdf8;
+      --ink: #13233a;
+      --muted: #5e6d7f;
+      --line: #dbe4d2;
+      --accent: #0f766e;
+      --pale-blue: #e8eff7;
+      --pale-green: #e2f0e6;
+      --pale-amber: #f7f0dc;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      background:
+        radial-gradient(circle at top left, rgba(15,118,110,0.08), transparent 28%),
+        linear-gradient(180deg, #f9faf7 0%, var(--bg) 100%);
+      color: var(--ink);
+    }
+    .site-nav {
+      padding: 16px 20px 0;
+    }
+    .site-nav-inner {
+      max-width: 1180px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .site-link {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 10px 14px;
+      background: rgba(255,255,255,0.88);
+      border: 1px solid var(--line);
+      box-shadow: 0 8px 18px rgba(19, 35, 58, 0.06);
+      color: var(--ink);
+      text-decoration: none;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 20px 40px;
+    }
+    .hero, .module-card, .notes {
+      background: rgba(255,255,255,0.9);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 18px;
+      box-shadow: 0 12px 30px rgba(19, 35, 58, 0.06);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 42px;
+      line-height: 1;
+      letter-spacing: -0.03em;
+    }
+    h2 {
+      margin: 0 0 10px;
+      font-size: 24px;
+      letter-spacing: -0.03em;
+    }
+    h3 {
+      margin: 0 0 8px;
+      font-size: 20px;
+    }
+    p, li {
+      color: var(--muted);
+      font-family: Arial, Helvetica, sans-serif;
+      line-height: 1.5;
+    }
+    .module-grid {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .module-card.current { background: var(--pale-green); }
+    .module-card.next { background: var(--pale-blue); }
+    .module-card.future { background: var(--pale-amber); }
+    .module-tag {
+      display: inline-block;
+      margin-bottom: 12px;
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #0f5c57;
+      background: rgba(15,118,110,0.10);
+      border: 1px solid rgba(15,118,110,0.18);
+    }
+    .module-actions {
+      margin-top: 12px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .ghost-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      padding: 10px 14px;
+      border: 1px solid var(--line);
+      background: white;
+      color: var(--ink);
+      text-decoration: none;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .notes {
+      margin-top: 18px;
+    }
+    @media (max-width: 960px) {
+      .module-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="site-nav">
+    <div class="site-nav-inner">
+      <a class="site-link" href="/">Live Dashboard</a>
+      <a class="site-link" href="/lookup">Single Ticker Tracker</a>
+      <a class="site-link" href="/future-modules">Future Modules</a>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div class="hero">
+      <h1>Future Modules</h1>
+      <p>
+        This page is a placeholder map for the next dashboard sections. It helps separate what is already working
+        from what will be filled in later as the project grows toward broader U.S. equities coverage, sentiment,
+        predictions, confidence scoring, and paper trading.
+      </p>
+    </div>
+
+    <div class="module-grid">
+      <div class="module-card current">
+        <div class="module-tag">Live Now</div>
+        <h3>Live Dashboard</h3>
+        <p>Current market-news feed, filters, monitoring, and watchlist-oriented workflow.</p>
+        <div class="module-actions">
+          <a class="ghost-link" href="/">Open Section</a>
+        </div>
+      </div>
+
+      <div class="module-card current">
+        <div class="module-tag">Live Now</div>
+        <h3>Single Ticker Tracker</h3>
+        <p>Focused collection page for symbol-specific research outside the core saved list.</p>
+        <div class="module-actions">
+          <a class="ghost-link" href="/lookup">Open Section</a>
+        </div>
+      </div>
+
+      <div class="module-card next">
+        <div class="module-tag">Planned Next</div>
+        <h3>Prediction Layer</h3>
+        <p>Reserved space for sentiment-driven predictions, confidence, and stock-specific behavior logic.</p>
+        <div class="module-actions">
+          <a class="ghost-link" href="#prediction-plan">View Plan</a>
+        </div>
+      </div>
+
+      <div class="module-card next">
+        <div class="module-tag">Planned Next</div>
+        <h3>Paper Trading</h3>
+        <p>Future simulated investment area for testing model ideas with fake capital before any real use.</p>
+        <div class="module-actions">
+          <a class="ghost-link" href="#paper-trading-plan">View Plan</a>
+        </div>
+      </div>
+
+      <div class="module-card future">
+        <div class="module-tag">Longer Term</div>
+        <h3>Market-Wide Coverage</h3>
+        <p>Expansion from limited prototype watchlists toward broader U.S. equity market coverage.</p>
+        <div class="module-actions">
+          <a class="ghost-link" href="#coverage-plan">View Plan</a>
+        </div>
+      </div>
+
+      <div class="module-card future">
+        <div class="module-tag">Longer Term</div>
+        <h3>Portfolio Evaluation</h3>
+        <p>Future module for tracking how often the system’s signals succeed across stocks and strategies.</p>
+        <div class="module-actions">
+          <a class="ghost-link" href="#evaluation-plan">View Plan</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes" id="prediction-plan">
+      <h2>Planned Section Notes</h2>
+      <ul>
+        <li><strong>Prediction Layer:</strong> intended to combine sentiment, source weighting, translation reuse, and stock-specific confidence scoring.</li>
+        <li id="paper-trading-plan"><strong>Paper Trading:</strong> intended to test the model with fake capital and track performance safely before any real-world use.</li>
+        <li id="coverage-plan"><strong>Market-Wide Coverage:</strong> intended to expand the project beyond a prototype watchlist toward broader U.S. stock universes.</li>
+        <li id="evaluation-plan"><strong>Portfolio Evaluation:</strong> intended to measure which stocks and signal types the model handles most reliably over time.</li>
+      </ul>
+    </div>
+  </div>
+</body>
+</html>

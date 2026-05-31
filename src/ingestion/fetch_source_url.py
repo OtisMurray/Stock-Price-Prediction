@@ -132,15 +132,25 @@ def _fetch_with_curl_impersonation(url: str, timeout: int) -> FetchedPage:
     )
 
 
-def fetch_url_with_fallback(url: str, timeout: int = 20) -> FetchedPage:
-    fetchers = [
-        ("urllib", _fetch_with_urllib),
-        ("cloudscraper", _fetch_with_cloudscraper),
-        ("curl_cffi", _fetch_with_curl_impersonation),
-    ]
+def fetch_url_with_fallback(
+    url: str,
+    timeout: int = 20,
+    *,
+    methods: tuple[str, ...] | None = None,
+) -> FetchedPage:
+    fetcher_map = {
+        "urllib": _fetch_with_urllib,
+        "cloudscraper": _fetch_with_cloudscraper,
+        "curl_cffi": _fetch_with_curl_impersonation,
+    }
+    selected_methods = methods or ("urllib", "cloudscraper", "curl_cffi")
     errors: list[str] = []
 
-    for name, fetcher in fetchers:
+    for name in selected_methods:
+        fetcher = fetcher_map.get(name)
+        if fetcher is None:
+            errors.append(f"{name}: unknown fetch method")
+            continue
         try:
             return fetcher(url, timeout)
         except ImportError:

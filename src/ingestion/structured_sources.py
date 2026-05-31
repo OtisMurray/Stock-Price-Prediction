@@ -23,6 +23,8 @@ class StructuredSource:
     json_query: dict[str, str] = field(default_factory=dict)
     is_ticker_specific: bool = False
     collection_url_template: str = ""
+    source_family: str = "structured"
+    quality_tier: str = "secondary_structured"
 
     def build_collection_url(self, *, ticker: str = "", exchange: str = "", symbol: str = "") -> str:
         template = self.collection_url_template or self.collection_url
@@ -50,6 +52,7 @@ STRUCTURED_SOURCES: dict[str, StructuredSource] = {
         rss_url="https://www.prnewswire.com/rss/news-releases-list.rss",
         use_rss_first=True,
         notes="Strong first implementation source because official RSS support is public.",
+        quality_tier="secondary_structured",
     ),
     "globenewswire": StructuredSource(
         key="globenewswire",
@@ -68,6 +71,7 @@ STRUCTURED_SOURCES: dict[str, StructuredSource] = {
         ),
         use_rss_first=True,
         notes="Structured press-release source. Stock Market News RSS feed is public and better than HTML scraping here.",
+        quality_tier="secondary_structured",
     ),
     "accessnewswire": StructuredSource(
         key="accessnewswire",
@@ -91,6 +95,7 @@ STRUCTURED_SOURCES: dict[str, StructuredSource] = {
         json_url="https://www.accessnewswire.com/newsroom/api",
         json_query={},
         notes="Public structured source. ACCESS all-news cards are powered by a CSRF-protected JSON endpoint behind the public newsroom page.",
+        quality_tier="secondary_structured",
     ),
     "mtnewswires": StructuredSource(
         key="mtnewswires",
@@ -103,6 +108,7 @@ STRUCTURED_SOURCES: dict[str, StructuredSource] = {
         selector_candidates=("a[href*='/news/']",),
         article_href_contains=("/news/",),
         notes="Public site can expose company news posts, but the real market feed is premium.",
+        quality_tier="monitor_only",
     ),
     "dowjones": StructuredSource(
         key="dowjones",
@@ -114,6 +120,7 @@ STRUCTURED_SOURCES: dict[str, StructuredSource] = {
         parser_type="Premium feed or licensed integration",
         is_premium=True,
         notes="High-value source, but likely not suitable for free/public collection.",
+        quality_tier="monitor_only",
     ),
     "finviz": StructuredSource(
         key="finviz",
@@ -129,6 +136,7 @@ STRUCTURED_SOURCES: dict[str, StructuredSource] = {
             "a",
         ),
         notes="Useful aggregator and cross-check source, but not the only source because of timing lag.",
+        quality_tier="secondary_structured",
     ),
     "tradingview": StructuredSource(
         key="tradingview",
@@ -144,6 +152,7 @@ STRUCTURED_SOURCES: dict[str, StructuredSource] = {
             "Primary ticker-specific source. Uses TradingView's public symbol-news flow through "
             "the news-mediator endpoint so articles surface earlier than Yahoo Finance RSS."
         ),
+        quality_tier="primary_structured",
     ),
     "stocktwits": StructuredSource(
         key="stocktwits",
@@ -156,6 +165,8 @@ STRUCTURED_SOURCES: dict[str, StructuredSource] = {
         parser_type="Embedded JSON",
         is_ticker_specific=True,
         notes="Supplementary ticker-specific source pulled from public Stocktwits symbol pages.",
+        source_family="unstructured",
+        quality_tier="supplemental_unstructured",
     ),
 }
 

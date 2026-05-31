@@ -6,13 +6,13 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 import time
 
-from .rss_collectors import build_keywords, fetch_rss_source
+from .rss_collectors import build_keywords, collect_baseline_articles, fetch_rss_source
 from .rss_sources import DEFAULT_BASELINE_SOURCE_KEYS, RSS_SOURCES
 from .source_cache import get_cached_rows, load_source_cache, save_source_cache, set_cached_rows
 from .seen_cache import load_seen_links, save_seen_links
 from .structured_collectors import collect_structured_headlines
 from .structured_sources import PUBLIC_STRUCTURED_SOURCE_KEYS, STRUCTURED_SOURCES
-from .timestamp_utils import normalize_published_fields
+from .timestamp_utils import normalize_published_fields, us_equity_market_session
 
 
 @dataclass(slots=True)
@@ -66,13 +66,13 @@ DEFAULT_SOURCE_CACHE_TTLS = {
     "baseline_rss:sec_press_releases": 180,
     "baseline_rss:prnewswire_all_news": 120,
     "baseline_rss:yahoo_finance": 45,
-    "structured_news:tradingview": 45,
-    "structured_news:stocktwits": 90,
-    "structured_news:prnewswire": 120,
-    "structured_news:globenewswire": 300,
-    "structured_news:accessnewswire": 240,
-    "structured_news:mtnewswires": 240,
-    "structured_news:finviz": 180,
+    "structured_news:tradingview": 60,
+    "structured_news:stocktwits": 180,
+    "structured_news:prnewswire": 180,
+    "structured_news:globenewswire": 420,
+    "structured_news:accessnewswire": 420,
+    "structured_news:mtnewswires": 480,
+    "structured_news:finviz": 240,
 }
 
 SOURCE_REFRESH_TIERS = {
@@ -88,6 +88,46 @@ SOURCE_REFRESH_TIERS = {
     "structured_news:accessnewswire": "slow",
     "structured_news:mtnewswires": "slow",
     "structured_news:finviz": "slow",
+}
+
+DEFAULT_STRUCTURED_LIMITS_ACTIVE = {
+    "tradingview": 8,
+    "stocktwits": 6,
+    "prnewswire": 12,
+    "globenewswire": 12,
+    "accessnewswire": 10,
+    "mtnewswires": 8,
+    "finviz": 12,
+}
+
+DEFAULT_STRUCTURED_LIMITS_COLD = {
+    "tradingview": 4,
+    "stocktwits": 3,
+    "prnewswire": 10,
+    "globenewswire": 10,
+    "accessnewswire": 8,
+    "mtnewswires": 6,
+    "finviz": 10,
+}
+
+COLD_TICKER_CACHE_TTL_MULTIPLIERS = {
+    "structured_news:tradingview": 4,
+    "structured_news:stocktwits": 3,
+}
+
+OFF_HOURS_CACHE_TTL_MULTIPLIERS = {
+    "baseline_rss:marketwatch_topstories": 3,
+    "baseline_rss:marketwatch_marketpulse": 4,
+    "baseline_rss:prnewswire_all_news": 90,
+    "baseline_rss:sec_press_releases": 3,
+    "baseline_rss:yahoo_finance": 2,
+    "structured_news:prnewswire": 80,
+    "structured_news:globenewswire": 8,
+    "structured_news:accessnewswire": 8,
+    "structured_news:mtnewswires": 8,
+    "structured_news:finviz": 6,
+    "structured_news:tradingview": 2,
+    "structured_news:stocktwits": 2,
 }
 
 
@@ -109,6 +149,40 @@ def _source_tier_for_key(cache_key: str) -> str:
     if cache_key.startswith("structured_news:stocktwits:"):
         return SOURCE_REFRESH_TIERS["structured_news:stocktwits"]
     return SOURCE_REFRESH_TIERS.get(cache_key, "medium")
+
+
+def _effective_structured_limit(source_key: str, requested_limit: int, *, active_context: bool) -> int | None:
+    if requested_limit > 0:
+        return requested_limit
+    limits = DEFAULT_STRUCTURED_LIMITS_ACTIVE if active_context else DEFAULT_STRUCTURED_LIMITS_COLD
+    return limits.get(source_key)
+
+
+def _effective_cache_ttl(cache_key: str, *, active_context: bool) -> int:
+    ttl = _cache_ttl_for_key(cache_key)
+    if ttl <= 0:
+        return ttl
+    session_label = us_equity_market_session()
+    market_open = session_label == "Market Open (ET)"
+    if not market_open:
+        for prefix, multiplier in OFF_HOURS_CACHE_TTL_MULTIPLIERS.items():
+            if cache_key.startswith(f"{prefix}:") or cache_key == prefix:
+                ttl *= multiplier
+                break
+    if active_context:
+        return ttl
+    for prefix, multiplier in COLD_TICKER_CACHE_TTL_MULTIPLIERS.items():
+        if cache_key.startswith(f"{prefix}:"):
+            return ttl * multiplier
+    return ttl
+
+
+def _trim_cached_rows(cached_rows: list[dict[str, Any]] | None, limit: int | None) -> list[dict[str, Any]] | None:
+    if cached_rows is None:
+        return None
+    if limit is None or limit <= 0:
+        return cached_rows
+    return list(cached_rows[:limit])
 
 
 def _utc_now_iso() -> str:
@@ -133,7 +207,7 @@ def _article_to_row(article) -> dict[str, Any]:
     }
 
 
-def _headline_to_row(headline) -> dict[str, Any]:
+def _headline_to_row(headline, *, source_scope_ticker: str = "") -> dict[str, Any]:
     collected_at = _utc_now_iso()
     published_fields = normalize_published_fields(headline.published, collected_at=collected_at)
     return {
@@ -148,6 +222,7 @@ def _headline_to_row(headline) -> dict[str, Any]:
         "summary": headline.summary,
         "collection_method": headline.collection_method,
         "collected_at": collected_at,
+        "source_scope_ticker": source_scope_ticker.upper(),
     }
 
 
@@ -197,13 +272,16 @@ def collect_candidate_rows(
             try:
                 headlines = collect_structured_headlines(
                     source_key,
-                    limit=None if structured_limit == 0 else structured_limit,
+                    limit=_effective_structured_limit(source_key, structured_limit, active_context=True),
                     ticker=ticker if source.is_ticker_specific else "",
                 )
                 for headline in headlines:
                     if not include_seen and headline.link in seen_links:
                         continue
-                    if row_matcher([headline.title, headline.summary], keywords):
+                    if source.is_ticker_specific:
+                        rows.append(_headline_to_row(headline, source_scope_ticker=ticker))
+                        newly_seen.add(headline.link)
+                    elif row_matcher([headline.title, headline.summary], keywords):
                         rows.append(_headline_to_row(headline))
                         newly_seen.add(headline.link)
             except Exception as exc:
@@ -229,6 +307,7 @@ def collect_watchlist_candidate_rows(
     matcher: Callable[[list[str], list[str]], bool] | None = None,
     max_workers: int | None = None,
     source_cache_file: str = "tmp/source_fetch_cache.json",
+    active_tickers: set[str] | None = None,
 ) -> WatchlistSourceCollectionResult:
     row_matcher = matcher or (lambda text_parts, row_keywords: True)
     source_keys = baseline_source_keys or list(DEFAULT_BASELINE_SOURCE_KEYS)
@@ -250,8 +329,18 @@ def collect_watchlist_candidate_rows(
         )
         for entry in entries
     }
+    active_ticker_set = {
+        str(ticker).strip().upper()
+        for ticker in (active_tickers or set(rows_by_ticker))
+        if str(ticker).strip()
+    }
+    if not active_ticker_set:
+        active_ticker_set = set(rows_by_ticker)
     worker_count = max_workers or max(8, min(24, len(entries) + len(source_keys) + len(struct_keys)))
     now_epoch = time.time()
+
+    def ticker_is_active(ticker: str) -> bool:
+        return str(ticker).upper() in active_ticker_set
 
     def distribute_row(row: dict[str, Any], *, text_parts: list[str]) -> int:
         matched = 0
@@ -347,11 +436,12 @@ def collect_watchlist_candidate_rows(
             if not include_seen and link in seen_links:
                 continue
             fetched_total += 1
-            if row_matcher([row.get("title", ""), row.get("summary", "")], keywords):
-                rows_by_ticker[ticker].append(dict(row))
-                matched_total += 1
-                if link:
-                    newly_seen.add(link)
+            row_copy = dict(row)
+            row_copy["source_scope_ticker"] = ticker
+            rows_by_ticker[ticker].append(row_copy)
+            matched_total += 1
+            if link:
+                newly_seen.add(link)
         source = STRUCTURED_SOURCES[source_key]
         source_health.append(
             SourceHealthRecord(
@@ -387,19 +477,19 @@ def collect_watchlist_candidate_rows(
         )
         return source_key, ticker, articles, time.perf_counter() - started
 
-    def fetch_structured(source_key: str) -> tuple[str, list[Any], float]:
+    def fetch_structured(source_key: str, limit: int | None) -> tuple[str, list[Any], float]:
         started = time.perf_counter()
         headlines = collect_structured_headlines(
             source_key,
-            limit=None if structured_limit == 0 else structured_limit,
+            limit=limit,
         )
         return source_key, headlines, time.perf_counter() - started
 
-    def fetch_ticker_structured(source_key: str, ticker: str) -> tuple[str, str, list[Any], float]:
+    def fetch_ticker_structured(source_key: str, ticker: str, limit: int | None) -> tuple[str, str, list[Any], float]:
         started = time.perf_counter()
         headlines = collect_structured_headlines(
             source_key,
-            limit=None if structured_limit == 0 else structured_limit,
+            limit=limit,
             ticker=ticker,
         )
         return source_key, ticker, headlines, time.perf_counter() - started
@@ -416,7 +506,7 @@ def collect_watchlist_candidate_rows(
                         cached_rows, cache_age_seconds = get_cached_rows(
                             cache_payload,
                             cache_key=cache_key,
-                            max_age_seconds=_cache_ttl_for_key(cache_key),
+                            max_age_seconds=_effective_cache_ttl(cache_key, active_context=ticker_is_active(ticker)),
                             now_epoch=now_epoch,
                         )
                         if cached_rows is not None:
@@ -456,13 +546,19 @@ def collect_watchlist_candidate_rows(
                 if source.is_ticker_specific:
                     for entry in entries:
                         ticker = str(entry.get("ticker", "")).upper()
+                        effective_limit = _effective_structured_limit(
+                            source_key,
+                            structured_limit,
+                            active_context=ticker_is_active(ticker),
+                        )
                         cache_key = f"structured_news:{source_key}:{ticker}"
                         cached_rows, cache_age_seconds = get_cached_rows(
                             cache_payload,
                             cache_key=cache_key,
-                            max_age_seconds=_cache_ttl_for_key(cache_key),
+                            max_age_seconds=_effective_cache_ttl(cache_key, active_context=ticker_is_active(ticker)),
                             now_epoch=now_epoch,
                         )
+                        cached_rows = _trim_cached_rows(cached_rows, effective_limit)
                         if cached_rows is not None:
                             record_cached_ticker_structured_rows(
                                 source_key,
@@ -476,10 +572,16 @@ def collect_watchlist_candidate_rows(
                                 "type": "ticker_structured",
                                 "source_key": source_key,
                                 "ticker": ticker,
-                                "future": executor.submit(fetch_ticker_structured, source_key, ticker),
+                                "future": executor.submit(
+                                    fetch_ticker_structured,
+                                    source_key,
+                                    ticker,
+                                    effective_limit,
+                                ),
                             }
                         )
                 else:
+                    effective_limit = _effective_structured_limit(source_key, structured_limit, active_context=True)
                     cache_key = f"structured_news:{source_key}"
                     cached_rows, cache_age_seconds = get_cached_rows(
                         cache_payload,
@@ -487,6 +589,7 @@ def collect_watchlist_candidate_rows(
                         max_age_seconds=_cache_ttl_for_key(cache_key),
                         now_epoch=now_epoch,
                     )
+                    cached_rows = _trim_cached_rows(cached_rows, effective_limit)
                     if cached_rows is not None:
                         record_cached_structured_rows(source_key, cached_rows, cache_age_seconds)
                         continue
@@ -495,7 +598,11 @@ def collect_watchlist_candidate_rows(
                             "type": "structured",
                             "source_key": source_key,
                             "ticker": "",
-                            "future": executor.submit(fetch_structured, source_key),
+                            "future": executor.submit(
+                                fetch_structured,
+                                source_key,
+                                effective_limit,
+                            ),
                         }
                     )
 
@@ -602,18 +709,16 @@ def collect_watchlist_candidate_rows(
                     cached_source_rows: list[dict[str, Any]] = []
                     matched_total = 0
                     fetched_total = 0
-                    keywords = keywords_by_ticker[ticker]
                     for headline in headlines:
-                        row = _headline_to_row(headline)
+                        row = _headline_to_row(headline, source_scope_ticker=ticker)
                         cached_source_rows.append(dict(row))
                         if not include_seen and headline.link in seen_links:
                             continue
                         fetched_total += 1
-                        if row_matcher([headline.title, headline.summary], keywords):
-                            rows_by_ticker[ticker].append(row)
-                            matched_total += 1
-                            if headline.link:
-                                newly_seen.add(headline.link)
+                        rows_by_ticker[ticker].append(row)
+                        matched_total += 1
+                        if headline.link:
+                            newly_seen.add(headline.link)
                     set_cached_rows(cache_payload, cache_key=cache_key, rows=cached_source_rows)
                     cache_dirty = True
                     source_health.append(

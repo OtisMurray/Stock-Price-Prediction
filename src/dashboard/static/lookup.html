@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Single Ticker Tracker</title>
+  <style>
+    :root {
+      --bg: #f3f5ef;
+      --panel: #fffdf8;
+      --ink: #13233a;
+      --muted: #5e6d7f;
+      --line: #dbe4d2;
+      --accent: #0f766e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      background:
+        radial-gradient(circle at top left, rgba(15,118,110,0.08), transparent 28%),
+        linear-gradient(180deg, #f9faf7 0%, var(--bg) 100%);
+      color: var(--ink);
+    }
+    .site-nav {
+      padding: 16px 20px 0;
+    }
+    .site-nav-inner {
+      max-width: 1180px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .site-link {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 10px 14px;
+      background: rgba(255,255,255,0.88);
+      border: 1px solid var(--line);
+      box-shadow: 0 8px 18px rgba(19, 35, 58, 0.06);
+      color: var(--ink);
+      text-decoration: none;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 20px 40px;
+    }
+    .hero, .panel, .mini-card {
+      background: rgba(255,255,255,0.9);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 18px;
+      box-shadow: 0 12px 30px rgba(19, 35, 58, 0.06);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 42px;
+      line-height: 1;
+      letter-spacing: -0.03em;
+    }
+    h2 {
+      margin: 0 0 10px;
+      font-size: 24px;
+      letter-spacing: -0.03em;
+    }
+    p, li {
+      color: var(--muted);
+      font-family: Arial, Helvetica, sans-serif;
+      line-height: 1.45;
+    }
+    .lookup-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr 1fr auto;
+      gap: 12px;
+      align-items: end;
+      margin-top: 18px;
+    }
+    label {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: white;
+      color: var(--ink);
+      font-size: 14px;
+    }
+    button {
+      border: none;
+      border-radius: 999px;
+      padding: 14px 22px;
+      background: linear-gradient(135deg, var(--accent), #0b4f69);
+      color: white;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.7;
+      cursor: wait;
+    }
+    .note {
+      margin-top: 14px;
+      font-size: 13px;
+    }
+    .summary-grid {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .mini-card .label {
+      color: var(--muted);
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .mini-card .value {
+      margin-top: 8px;
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+    .panel {
+      margin-top: 18px;
+    }
+    .story-list {
+      display: grid;
+      gap: 12px;
+    }
+    .story-item {
+      border: 1px solid #e5ebdf;
+      border-radius: 16px;
+      padding: 14px 16px;
+      background: white;
+    }
+    .headline-line {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    .headline-line a {
+      color: #173d6d;
+      text-decoration: none;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .story-meta {
+      margin-top: 8px;
+      display: flex;
+      gap: 8px 12px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 12px;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+    .story-summary {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .badge.earnings {
+      background: rgba(245, 158, 11, 0.16);
+      color: #9a5b00;
+    }
+    .badge.review {
+      background: rgba(217, 119, 6, 0.12);
+      color: #92400e;
+    }
+    .badge.related {
+      background: rgba(37, 99, 235, 0.1);
+      color: #1d4ed8;
+    }
+    .translate-button {
+      border: 1px solid rgba(23, 61, 109, 0.18);
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: white;
+      color: #173d6d;
+      font-size: 11px;
+      font-weight: 700;
+      font-family: Arial, Helvetica, sans-serif;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .translate-output {
+      margin-top: 10px;
+      border-left: 3px solid rgba(23, 61, 109, 0.18);
+      padding-left: 10px;
+      color: #38506d;
+      font-size: 13px;
+      line-height: 1.45;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: 16px;
+      border: 1px solid #e5ebdf;
+      background: white;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 760px;
+    }
+    th, td {
+      padding: 12px 10px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid #edf1e7;
+      font-size: 14px;
+    }
+    th {
+      background: #f8faf6;
+      color: #2d4257;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .empty {
+      color: var(--muted);
+      font-size: 14px;
+      margin: 8px 0 0;
+    }
+    .hidden {
+      display: none;
+    }
+    .error {
+      margin-top: 14px;
+      color: #9f1239;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 14px;
+    }
+    .status {
+      margin-top: 14px;
+      color: #27445d;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 14px;
+    }
+    @media (max-width: 920px) {
+      .lookup-grid { grid-template-columns: 1fr; }
+      .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <div class="site-nav">
+    <div class="site-nav-inner">
+      <a class="site-link" href="/">Live Dashboard</a>
+      <a class="site-link" href="/lookup">Single Ticker Tracker</a>
+      <a class="site-link" href="/future-modules">Future Modules</a>
+    </div>
+  </div>
+  <div class="wrap">
+    <section class="hero">
+      <h1>Single Ticker Tracker</h1>
+      <p>Look up a ticker outside the saved watchlist and run a focused article collection on demand. This is useful for one-off research, validating symbol coverage, and testing how the current source stack handles a new equity.</p>
+      <div class="lookup-grid">
+        <div>
+          <label for="ticker-input">Ticker Symbol</label>
+          <input id="ticker-input" placeholder="AAPL, TSLA, BRK.B, etc." autocomplete="off">
+        </div>
+        <div>
+          <label for="company-input">Company Name (Optional)</label>
+          <input id="company-input" placeholder="Apple, Tesla, Berkshire Hathaway">
+        </div>
+        <div>
+          <label for="keywords-input">Extra Keywords (Optional)</label>
+          <input id="keywords-input" placeholder="Comma-separated helper keywords">
+        </div>
+        <div>
+          <button id="lookup-button" type="button">Run Tracker</button>
+        </div>
+      </div>
+      <p class="note">For short or common tickers like <strong>V</strong>, <strong>MA</strong>, <strong>GE</strong>, or <strong>DE</strong>, adding the company name helps the shared-source matching behave better.</p>
+      <div id="lookup-status" class="status hidden"></div>
+      <div id="lookup-error" class="error hidden"></div>
+    </section>
+
+    <section id="lookup-results" class="hidden">
+      <div class="summary-grid">
+        <article class="mini-card"><div class="label">Raw Matches</div><div class="value" id="summary-raw">0</div></article>
+        <article class="mini-card"><div class="label">Primary Stories</div><div class="value" id="summary-primary">0</div></article>
+        <article class="mini-card"><div class="label">Related</div><div class="value" id="summary-related">0</div></article>
+        <article class="mini-card"><div class="label">Review</div><div class="value" id="summary-review">0</div></article>
+        <article class="mini-card"><div class="label">Source Count</div><div class="value" id="summary-sources">0</div></article>
+      </div>
+
+      <section class="panel">
+        <h2>Primary Stories</h2>
+        <p id="lookup-keywords" class="empty"></p>
+        <div id="stories-list" class="story-list"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Related Context</h2>
+        <div id="related-list" class="story-list"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Review Candidates</h2>
+        <div id="review-list" class="story-list"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Source Summary</h2>
+        <p class="empty">This shows which sources contributed rows during the on-demand lookup, even if some did not survive into the final primary story group.</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Source</th><th>Raw Matches</th><th>Primary Stories</th><th>Related</th><th>Review</th><th>Rejected</th></tr>
+            </thead>
+            <tbody id="source-usage-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Collector Notes</h2>
+        <p class="empty">Healthy sources can still show zero visible rows if they do not contribute recent qualifying articles for this specific ticker lookup.</p>
+        <ul id="failures-list"></ul>
+      </section>
+    </section>
+  </div>
+  <script>
+    function formatPublished(value) {
+      return value || "No timestamp available";
+    }
+
+    function isEarningsEvent(eventType) {
+      return String(eventType || "").toLowerCase().includes("earnings");
+    }
+
+    function badgeMarkup(bucketLabel, eventType) {
+      const badges = [];
+      if (bucketLabel === "Related") badges.push('<span class="badge related">Related</span>');
+      if (bucketLabel === "Review") badges.push('<span class="badge review">Review</span>');
+      if (isEarningsEvent(eventType)) badges.push('<span class="badge earnings">Earnings</span>');
+      return badges.join("");
+    }
+
+    async function handleTranslate(button, row) {
+      button.disabled = true;
+      button.textContent = "Translating...";
+      const target = button.parentElement.querySelector(".translate-output");
+      try {
+        const response = await fetch("/api/translate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            story_key: row.story_key || "",
+            title: row.title || "",
+            summary: row.summary || ""
+          })
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.message || "Translation failed.");
+        target.innerHTML = `
+          <div><strong>English title:</strong> ${payload.title_translated || row.title}</div>
+          ${payload.summary_translated ? `<div style="margin-top:6px;">${payload.summary_translated}</div>` : ""}
+          <div style="margin-top:6px;"><strong>Source language:</strong> ${payload.source_language || "auto"}</div>
+        `;
+      } catch (error) {
+        target.textContent = `Translation unavailable: ${error}`;
+      } finally {
+        target.classList.remove("hidden");
+        button.disabled = false;
+        button.textContent = "Translate";
+      }
+    }
+
+    function renderStoryList(containerId, rows) {
+      const container = document.getElementById(containerId);
+      if (!rows.length) {
+        container.innerHTML = '<p class="empty">No rows in this bucket.</p>';
+        return;
+      }
+      container.innerHTML = "";
+      rows.forEach((row) => {
+        const article = document.createElement("article");
+        article.className = "story-item";
+        article.innerHTML = `
+          <div class="headline-line">
+            <a href="${row.link || "#"}" target="_blank" rel="noreferrer">${row.title || "Untitled"}</a>
+            ${badgeMarkup(row.bucket_label, row.event_type)}
+            ${row.needs_translation ? '<button type="button" class="translate-button">Translate</button>' : ""}
+          </div>
+          <div class="story-meta">
+            <span><strong>Source:</strong> ${row.source_name || "Unknown"}</span>
+            <span><strong>Event:</strong> ${row.event_type || "general"}</span>
+            <span><strong>Signal:</strong> ${row.signal_strength ?? 0}</span>
+            <span><strong>Published:</strong> ${formatPublished(row.published_display || row.published_raw || row.published_at || "")}</span>
+          </div>
+          ${row.summary ? `<div class="story-summary">${row.summary}</div>` : ""}
+          <div class="translate-output hidden"></div>
+        `;
+        if (row.needs_translation) {
+          const button = article.querySelector(".translate-button");
+          button.addEventListener("click", () => handleTranslate(button, row));
+        }
+        container.appendChild(article);
+      });
+    }
+
+    function fillSourceUsage(sourceUsage) {
+      const body = document.getElementById("source-usage-body");
+      const rawMatches = sourceUsage.raw_matches || {};
+      const sources = Array.from(new Set([
+        ...Object.keys(rawMatches),
+        ...Object.keys(sourceUsage.primary_stories || {}),
+        ...Object.keys(sourceUsage.related_context || {}),
+        ...Object.keys(sourceUsage.review_candidates || {}),
+        ...Object.keys(sourceUsage.rejections || {})
+      ])).sort();
+      if (!sources.length) {
+        body.innerHTML = '<tr><td colspan="6">No source usage was recorded.</td></tr>';
+        return;
+      }
+      body.innerHTML = sources.map(source => `
+        <tr>
+          <td>${source}</td>
+          <td>${rawMatches[source] || 0}</td>
+          <td>${(sourceUsage.primary_stories || {})[source] || 0}</td>
+          <td>${(sourceUsage.related_context || {})[source] || 0}</td>
+          <td>${(sourceUsage.review_candidates || {})[source] || 0}</td>
+          <td>${(sourceUsage.rejections || {})[source] || 0}</td>
+        </tr>
+      `).join("");
+    }
+
+    function fillFailures(failures) {
+      const list = document.getElementById("failures-list");
+      list.innerHTML = failures.length
+        ? failures.map(item => `<li>${item}</li>`).join("")
+        : "<li>No collector failures were reported for this lookup.</li>";
+    }
+
+    async function runLookup() {
+      const ticker = document.getElementById("ticker-input").value.trim().toUpperCase();
+      const company = document.getElementById("company-input").value.trim();
+      const keywords = document.getElementById("keywords-input").value.trim();
+      const button = document.getElementById("lookup-button");
+      const status = document.getElementById("lookup-status");
+      const error = document.getElementById("lookup-error");
+      const results = document.getElementById("lookup-results");
+
+      error.classList.add("hidden");
+      error.textContent = "";
+      results.classList.add("hidden");
+
+      if (!ticker) {
+        error.textContent = "Enter a ticker symbol first.";
+        error.classList.remove("hidden");
+        status.classList.add("hidden");
+        return;
+      }
+
+      status.classList.remove("hidden");
+      status.textContent = `Running focused lookup for ${ticker}...`;
+      button.disabled = true;
+
+      try {
+        const response = await fetch("/api/lookup-ticker", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ticker, company, keywords })
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.message || "Ticker lookup failed.");
+
+        document.getElementById("summary-raw").textContent = payload.summary.raw_match_count;
+        document.getElementById("summary-primary").textContent = payload.summary.primary_count;
+        document.getElementById("summary-related").textContent = payload.summary.related_count;
+        document.getElementById("summary-review").textContent = payload.summary.review_count;
+        document.getElementById("summary-sources").textContent = payload.summary.source_count;
+        document.getElementById("lookup-keywords").textContent = `Keywords used: ${payload.keywords.join(", ")}`;
+
+        renderStoryList("stories-list", payload.stories || []);
+        renderStoryList("related-list", payload.related_context || []);
+        renderStoryList("review-list", payload.review_candidates || []);
+        fillSourceUsage(payload.source_usage || {});
+        fillFailures(payload.failures || []);
+
+        status.textContent = `${payload.ticker} lookup complete. ${payload.summary.primary_count} primary stories found from ${payload.summary.source_count} sources.`;
+        results.classList.remove("hidden");
+      } catch (lookupError) {
+        error.textContent = String(lookupError);
+        error.classList.remove("hidden");
+        status.classList.add("hidden");
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    document.getElementById("lookup-button").addEventListener("click", runLookup);
+    document.getElementById("ticker-input").addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        runLookup();
+      }
+    });
+  </script>
+</body>
+</html>

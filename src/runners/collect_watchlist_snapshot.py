@@ -101,6 +101,24 @@ def load_watchlist_entries(path: str) -> list[dict[str, Any]]:
     return entries
 
 
+def derive_active_tickers_from_storage(sqlite_db: str) -> set[str]:
+    if not sqlite_db:
+        return set()
+    try:
+        from src.storage import fetch_latest_market_article_pool
+    except Exception:
+        return set()
+
+    article_pool = fetch_latest_market_article_pool(sqlite_db)
+    active: set[str] = set()
+    for article in article_pool.get("articles", []) or []:
+        for ticker in article.get("matched_tickers", []) or []:
+            normalized = str(ticker).strip().upper()
+            if normalized:
+                active.add(normalized)
+    return active
+
+
 def build_watchlist_snapshot(
     *,
     watchlist_file: str,
@@ -111,6 +129,7 @@ def build_watchlist_snapshot(
     skip_rss: bool = False,
     skip_structured: bool = False,
     sqlite_db: str = "",
+    active_tickers: set[str] | None = None,
 ) -> dict[str, Any]:
     from src.ingestion.rss_collectors import build_keywords
     from src.ingestion.source_pipeline import collect_watchlist_candidate_rows
@@ -118,6 +137,9 @@ def build_watchlist_snapshot(
     from src.runners.collect_all_for_ticker import build_source_usage, matches_keywords
 
     entries = load_watchlist_entries(watchlist_file)
+    if active_tickers is None:
+        derived_active = derive_active_tickers_from_storage(sqlite_db)
+        active_tickers = derived_active or None
     started = time.perf_counter()
     collection = collect_watchlist_candidate_rows(
         entries=entries,
@@ -128,6 +150,7 @@ def build_watchlist_snapshot(
         skip_rss=skip_rss,
         skip_structured=skip_structured,
         matcher=matches_keywords,
+        active_tickers=active_tickers,
     )
     ticker_results: list[dict[str, Any]] = []
     for entry in entries:

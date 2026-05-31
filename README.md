@@ -33,7 +33,7 @@ What is intentionally being saved for later:
 
 The current flow is:
 
-1. Collect RSS and structured public stock-news sources
+1. Collect shared and ticker-specific public stock-news sources
 2. Normalize timestamps and article fields during ingestion
 3. Match articles to tracked tickers
 4. Deduplicate and cluster similar stories
@@ -57,21 +57,26 @@ The current flow is:
 
 ## Current Data Sources
 
-### RSS and Feed Sources
+### Shared Sources
 
-- Yahoo Finance Headlines
 - MarketWatch Top Stories
 - MarketWatch MarketPulse
 - SEC Press Releases
 - PR Newswire All News Releases
-
-### Structured Public Sources
-
 - PR Newswire
 - GlobeNewswire
 - ACCESS Newswire
 - MT Newswires
 - Finviz
+
+### Ticker-Specific Sources
+
+- TradingView News Flow
+- Stocktwits News
+
+### Supplemental / Background Sources
+
+- Yahoo Finance Headlines
 
 ## Repository Structure
 
@@ -111,6 +116,14 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### Optional Sentiment Dependencies
+
+The hosted dashboard does not require the heavy sentiment stack. If you want to run later FinBERT or transformer-based sentiment experiments locally, install:
+
+```bash
+pip install -r requirements-sentiment.txt
+```
+
 ## Main Commands
 
 ### Run the Current Dashboard
@@ -122,6 +135,41 @@ python3 src/other/watchlist_dashboard.py
 Then open:
 
 - `http://127.0.0.1:8000`
+
+### Open It Like a Local App
+
+Double-click:
+
+- `/Users/otismurray/Stock-Price-Prediction/scripts/open_dashboard.command`
+
+That launcher starts the dashboard if needed and opens it in your browser.
+
+### Deployment-Ready Entry Point
+
+The repo now includes a production entry point and process file:
+
+- `/Users/otismurray/Stock-Price-Prediction/app.py`
+- `/Users/otismurray/Stock-Price-Prediction/Procfile`
+
+For platforms like Railway or Render, the app can be started with:
+
+```bash
+gunicorn app:app
+```
+
+Useful environment variables:
+
+- `PORT`
+- `HOST`
+- `STOCK_DASHBOARD_DATA_ROOT`
+- `STOCK_DASHBOARD_WATCHLIST_FILE`
+- `STOCK_DASHBOARD_SQLITE_DB`
+- `STOCK_DASHBOARD_SNAPSHOT_FILE`
+- `STOCK_DASHBOARD_STATE_FILE`
+
+For hosted deployment notes, see:
+
+- `/Users/otismurray/Stock-Price-Prediction/DEPLOYMENT.md`
 
 ### Run the Legacy Dashboard
 
