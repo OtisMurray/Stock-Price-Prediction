@@ -78,9 +78,9 @@ STRUCTURED_SOURCES: dict[str, StructuredSource] = {
         name="ACCESS Newswire",
         homepage_url="https://www.accessnewswire.com/",
         collection_url="https://www.accessnewswire.com/newsroom",
-        access_type="Public newsroom pages",
-        first_method="JSON feed first",
-        parser_type="JSON API, BeautifulSoup fallback",
+        access_type="Monitor only: direct ACCESS collection is Cloudflare-blocked; ACCESS-origin stories still surface through aggregators.",
+        first_method="Excluded from active dashboard collection",
+        parser_type="Monitor-only source definition",
         selector_candidates=(
             "a[href*='/news-release/']",
             "a[href*='/news/']",
@@ -94,8 +94,12 @@ STRUCTURED_SOURCES: dict[str, StructuredSource] = {
         article_href_contains=("/news-release/", "/news/"),
         json_url="https://www.accessnewswire.com/newsroom/api",
         json_query={},
-        notes="Public structured source. ACCESS all-news cards are powered by a CSRF-protected JSON endpoint behind the public newsroom page.",
-        quality_tier="secondary_structured",
+        notes=(
+            "Direct ACCESS collection is excluded from the active dashboard because the public API is blocked "
+            "by Cloudflare. ACCESS-origin stories are still captured indirectly through broader sources such "
+            "as TradingView and Finviz when they syndicate them."
+        ),
+        quality_tier="monitor_only",
     ),
     "mtnewswires": StructuredSource(
         key="mtnewswires",
@@ -176,7 +180,6 @@ PUBLIC_STRUCTURED_SOURCE_KEYS = [
     "stocktwits",
     "prnewswire",
     "globenewswire",
-    "accessnewswire",
     "mtnewswires",
     "finviz",
 ]

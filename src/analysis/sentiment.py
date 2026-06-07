@@ -7,9 +7,9 @@ import re
 from typing import Any
 
 FINBERT_MAX_INPUT_CHARS = 1500
-MIN_FINBERT_INPUT_CHARS = 24
+MIN_FINBERT_INPUT_CHARS = 20
 FINBERT_MODEL_NAME = "ProsusAI/finbert"
-FINBERT_DEFAULT_DOWNLOAD_ENABLED = "1"
+FINBERT_DEFAULT_DOWNLOAD_ENABLED = "0"
 
 
 POSITIVE_PHRASES = {
@@ -244,6 +244,41 @@ def _combined_article_text(article: dict[str, Any]) -> str:
     return " [SEP] ".join(parts).strip()
 
 
+def _finbert_metadata_context(article: dict[str, Any]) -> str:
+    ticker = str(article.get("ticker", "") or "").strip().upper()
+    matched_tickers = [
+        str(value).strip().upper()
+        for value in article.get("matched_tickers", []) or []
+        if str(value).strip()
+    ]
+    company = " ".join(str(article.get("company", "") or "").split())
+    source_name = " ".join(str(article.get("source_name", "") or "").split())
+    event_type = str(
+        article.get("event_type", "")
+        or ((article.get("event_types") or [""])[0] if isinstance(article.get("event_types"), list) else "")
+    ).strip()
+    primary_category = str(article.get("primary_category", "") or "").strip()
+
+    context_parts: list[str] = []
+    if company and ticker:
+        context_parts.append(f"Company context: {company} ({ticker}).")
+    elif company:
+        context_parts.append(f"Company context: {company}.")
+    elif ticker:
+        context_parts.append(f"Ticker context: {ticker}.")
+    elif matched_tickers:
+        context_parts.append(f"Matched ticker context: {', '.join(matched_tickers[:5])}.")
+
+    if event_type:
+        context_parts.append(f"Event context: {event_type.replace('_', ' ')}.")
+    if primary_category:
+        context_parts.append(f"Category context: {primary_category.replace('_', ' ')}.")
+    if source_name:
+        context_parts.append(f"Source context: {source_name}.")
+
+    return " ".join(context_parts).strip()
+
+
 def prepare_finbert_payload(article: dict[str, Any]) -> dict[str, Any]:
     combined_text = _combined_article_text(article)
     needs_translation = bool(article.get("needs_translation"))
@@ -252,13 +287,21 @@ def prepare_finbert_payload(article: dict[str, Any]) -> dict[str, Any]:
     translated_parts = [part for part in (translated_title, translated_summary) if part]
     model_text = " [SEP] ".join(translated_parts).strip() if translated_parts else combined_text
     normalized_model_text = " ".join(model_text.split())
+    metadata_context = _finbert_metadata_context(article)
+    metadata_context_added = False
+    if len(normalized_model_text) < MIN_FINBERT_INPUT_CHARS and metadata_context:
+        normalized_model_text = " [SEP] ".join(
+            part for part in (normalized_model_text, metadata_context) if part
+        )
+        metadata_context_added = True
     if len(normalized_model_text) > FINBERT_MAX_INPUT_CHARS:
         normalized_model_text = normalized_model_text[: FINBERT_MAX_INPUT_CHARS - 1].rstrip() + "…"
 
     translation_ready = not needs_translation or bool(translated_parts)
-    finbert_ready = translation_ready and len(normalized_model_text) >= MIN_FINBERT_INPUT_CHARS
+    has_article_text = bool(combined_text or translated_parts)
+    finbert_ready = has_article_text and translation_ready and len(normalized_model_text) >= MIN_FINBERT_INPUT_CHARS
 
-    if not combined_text:
+    if not combined_text and not translated_parts:
         readiness_reason = "missing_text"
     elif needs_translation and not translated_parts:
         readiness_reason = "translation_pending"
@@ -276,6 +319,7 @@ def prepare_finbert_payload(article: dict[str, Any]) -> dict[str, Any]:
         "finbert_input_text": normalized_model_text,
         "finbert_input_length": len(normalized_model_text),
         "finbert_uses_translation": bool(translated_parts),
+        "finbert_uses_metadata_context": metadata_context_added,
     }
 
 
@@ -284,12 +328,62 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
-@lru_cache(maxsize=1)
-def _load_finbert_components() -> tuple[Any, Any] | None:
-    if _env_flag("DISABLE_LOCAL_FINBERT"):
-        return None
+def _running_on_railway() -> bool:
+    return bool(
+        os.environ.get("RAILWAY_PROJECT_ID")
+        or os.environ.get("RAILWAY_SERVICE_ID")
+        or os.environ.get("RAILWAY_ENVIRONMENT_ID")
+    )
 
-    allow_download = _env_flag("FINBERT_ALLOW_DOWNLOAD", FINBERT_DEFAULT_DOWNLOAD_ENABLED)
+
+def _finbert_inference_context() -> str:
+    return str(os.environ.get("FINBERT_INFERENCE_CONTEXT", "") or "").strip().lower()
+
+
+def _railway_finbert_permitted() -> bool:
+    if not _running_on_railway():
+        return True
+    if not _env_flag("ALLOW_RAILWAY_FINBERT"):
+        return False
+    return _finbert_inference_context() == "backfill"
+
+
+def sentiment_runtime_status() -> dict[str, Any]:
+    disabled = _env_flag("DISABLE_LOCAL_FINBERT")
+    hosted_blocked = _running_on_railway() and not _railway_finbert_permitted()
+    download_enabled = _env_flag("FINBERT_ALLOW_DOWNLOAD", FINBERT_DEFAULT_DOWNLOAD_ENABLED)
+    return {
+        "baseline_model": "rule_based",
+        "target_model": "FinBERT",
+        "finbert_model_name": FINBERT_MODEL_NAME,
+        "finbert_enabled": not disabled and not hosted_blocked,
+        "finbert_download_enabled": download_enabled,
+        "finbert_runtime_mode": (
+            "disabled"
+            if disabled
+            else "hosted_backfill_only"
+            if hosted_blocked and _running_on_railway()
+            else "hosted_backfill_only"
+            if _running_on_railway() and _finbert_inference_context() != "backfill"
+            else "hosted_backfill_enabled"
+            if _running_on_railway()
+            else "cache_or_download"
+            if download_enabled
+            else "local_cache_only"
+        ),
+    }
+
+
+@lru_cache(maxsize=8)
+def _load_finbert_components_cached(allow_download: bool, cache_home: str, transformers_cache: str) -> tuple[Any, Any] | None:
+    if not allow_download:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        os.environ["DISABLE_SAFETENSORS_CONVERSION"] = "1"
+    if cache_home:
+        os.environ["HF_HOME"] = cache_home
+    if transformers_cache:
+        os.environ["TRANSFORMERS_CACHE"] = transformers_cache
     try:
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
@@ -301,6 +395,8 @@ def _load_finbert_components() -> tuple[Any, Any] | None:
         try:
             os.environ["HF_HUB_OFFLINE"] = "1" if local_only else "0"
             os.environ["TRANSFORMERS_OFFLINE"] = "1" if local_only else "0"
+            if local_only:
+                os.environ["DISABLE_SAFETENSORS_CONVERSION"] = "1"
             tokenizer = AutoTokenizer.from_pretrained(FINBERT_MODEL_NAME, local_files_only=local_only)
             model = AutoModelForSequenceClassification.from_pretrained(
                 FINBERT_MODEL_NAME,
@@ -312,6 +408,18 @@ def _load_finbert_components() -> tuple[Any, Any] | None:
         except Exception:
             continue
     return None
+
+
+def _load_finbert_components() -> tuple[Any, Any] | None:
+    if _env_flag("DISABLE_LOCAL_FINBERT"):
+        return None
+    if not _railway_finbert_permitted():
+        return None
+
+    allow_download = _env_flag("FINBERT_ALLOW_DOWNLOAD", FINBERT_DEFAULT_DOWNLOAD_ENABLED)
+    cache_home = str(os.environ.get("HF_HOME", "") or "")
+    transformers_cache = str(os.environ.get("TRANSFORMERS_CACHE", "") or "")
+    return _load_finbert_components_cached(allow_download, cache_home, transformers_cache)
 
 
 def score_finbert_sentiment(text: str) -> dict[str, Any] | None:
@@ -349,6 +457,28 @@ def score_finbert_sentiment(text: str) -> dict[str, Any] | None:
         "positive_probability": round(positive, 3),
         "negative_probability": round(negative, 3),
         "neutral_probability": round(neutral, 3),
+    }
+
+
+def _cached_finbert_result(article: dict[str, Any]) -> dict[str, Any] | None:
+    if not bool(article.get("cached_finbert_model_available")):
+        return None
+    label = str(article.get("cached_finbert_label", "") or "").strip().lower()
+    if not label:
+        return None
+    return {
+        "label": label,
+        "score": round(float(article.get("cached_finbert_score", 0.0) or 0.0), 3),
+        "confidence": round(float(article.get("cached_finbert_confidence", 0.0) or 0.0), 3),
+        "positive_probability": round(
+            float(article.get("cached_finbert_positive_probability", 0.0) or 0.0), 3
+        ),
+        "negative_probability": round(
+            float(article.get("cached_finbert_negative_probability", 0.0) or 0.0), 3
+        ),
+        "neutral_probability": round(
+            float(article.get("cached_finbert_neutral_probability", 0.0) or 0.0), 3
+        ),
     }
 
 
@@ -499,7 +629,12 @@ def score_ticker_relevance(article: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def score_article_sentiment(article: dict[str, Any]) -> dict[str, Any]:
+def score_article_sentiment(
+    article: dict[str, Any],
+    *,
+    allow_finbert: bool = True,
+    force_finbert_ready: bool = False,
+) -> dict[str, Any]:
     source_quality_tier = str(article.get("source_quality_tier", "") or "secondary_structured")
     event_type = str(
         article.get("event_type", "")
@@ -608,19 +743,26 @@ def score_article_sentiment(article: dict[str, Any]) -> dict[str, Any]:
     )
 
     finbert_payload = prepare_finbert_payload(article)
-    finbert_result = (
-        score_finbert_sentiment(str(finbert_payload.get("finbert_input_text", "")))
-        if _should_apply_finbert(
-            article,
-            finbert_ready=bool(finbert_payload.get("finbert_ready")),
-            normalized_score=normalized_score,
-            confidence=confidence,
-            ticker_relevance_confidence=ticker_relevance_confidence,
-            positive_markers=positive_markers,
-            negative_markers=negative_markers,
+    cached_finbert_result = _cached_finbert_result(article)
+    finbert_result = cached_finbert_result
+    if finbert_result is None:
+        finbert_result = (
+            score_finbert_sentiment(str(finbert_payload.get("finbert_input_text", "")))
+            if allow_finbert
+            and (
+                (force_finbert_ready and bool(finbert_payload.get("finbert_ready")))
+                or _should_apply_finbert(
+                    article,
+                    finbert_ready=bool(finbert_payload.get("finbert_ready")),
+                    normalized_score=normalized_score,
+                    confidence=confidence,
+                    ticker_relevance_confidence=ticker_relevance_confidence,
+                    positive_markers=positive_markers,
+                    negative_markers=negative_markers,
+                )
+            )
+            else None
         )
-        else None
-    )
 
     if finbert_result:
         finbert_weight = 0.42 if event_type in {"general_company_focus", "market_reaction"} else 0.28
@@ -725,6 +867,7 @@ def summarize_article_sentiment(articles: list[dict[str, Any]]) -> dict[str, Any
         }
 
     total_weight = 0.0
+    score_weight_total = 0.0
     weighted_score = 0.0
     weighted_confidence = 0.0
     weighted_signal_confidence = 0.0
@@ -752,8 +895,13 @@ def summarize_article_sentiment(articles: list[dict[str, Any]]) -> dict[str, Any
         relevance_confidence = float(sentiment.get("ticker_relevance_confidence", 0.0) or 0.0)
         recency_weight = _recency_weight(article)
         weight = max(0.08, confidence * source_weight * recency_weight)
-        weighted_score += score * weight
+        directional_support = max(
+            0.14,
+            min(1.0, (abs(score) * 2.6) + (relevance_confidence * 0.18)),
+        )
+        weighted_score += score * weight * directional_support
         total_weight += weight
+        score_weight_total += weight * directional_support
         weighted_confidence += confidence * weight
         weighted_signal_confidence += signal_confidence * weight
         weighted_relevance += relevance_confidence * weight
@@ -766,15 +914,15 @@ def summarize_article_sentiment(articles: list[dict[str, Any]]) -> dict[str, Any
         else:
             neutral_count += 1
 
-    aggregate_score = weighted_score / total_weight if total_weight else 0.0
+    aggregate_score = weighted_score / score_weight_total if score_weight_total else 0.0
     divisor = total_weight if total_weight else float(len(articles))
     average_confidence = weighted_confidence / divisor if divisor else 0.0
     average_signal_confidence = weighted_signal_confidence / divisor if divisor else 0.0
     average_relevance = weighted_relevance / divisor if divisor else 0.0
 
-    if aggregate_score >= 0.18:
+    if aggregate_score >= 0.12:
         label = "Bullish Tilt"
-    elif aggregate_score <= -0.18:
+    elif aggregate_score <= -0.12:
         label = "Bearish Tilt"
     elif bullish_count and bearish_count:
         label = "Mixed"

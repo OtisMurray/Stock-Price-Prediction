@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Correlation</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #172033;
+      --panel-soft: #1e293b;
+      --line: rgba(148, 163, 184, 0.18);
+      --text: #e5edf6;
+      --muted: #97a6ba;
+      --accent: #a855f7;
+      --bull: #48bb78;
+      --bear: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(168, 85, 247, 0.14), transparent 28%),
+        linear-gradient(180deg, #111827 0%, var(--bg) 100%);
+      color: var(--text);
+    }
+    .site-nav { padding: 16px 20px 0; }
+    .site-nav-inner {
+      max-width: 1280px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .site-link {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 10px 14px;
+      background: rgba(30, 41, 59, 0.85);
+      border: 1px solid var(--line);
+      color: var(--text);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .site-link.active {
+      border-color: rgba(168, 85, 247, 0.45);
+      color: #f4e8ff;
+    }
+    .wrap {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 28px 20px 40px;
+    }
+    .hero, .summary-card, .panel, .board {
+      background: rgba(17, 24, 39, 0.88);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: 0 18px 40px rgba(2, 6, 23, 0.28);
+    }
+    .hero { padding: 22px; border-top: 4px solid var(--accent); }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 40px;
+      letter-spacing: -0.03em;
+    }
+    h2 {
+      margin: 0 0 10px;
+      font-size: 24px;
+      letter-spacing: -0.03em;
+    }
+    h3 { margin: 0 0 8px; font-size: 18px; }
+    p { margin: 0; color: var(--muted); line-height: 1.55; }
+    .eyebrow {
+      display: inline-block;
+      margin-bottom: 8px;
+      border-radius: 999px;
+      padding: 4px 10px;
+      background: rgba(168, 85, 247, 0.14);
+      border: 1px solid rgba(168, 85, 247, 0.26);
+      color: #f4e8ff;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .summary-grid {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+    }
+    .summary-card {
+      padding: 16px 18px;
+      background: rgba(23, 32, 51, 0.92);
+    }
+    .summary-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .summary-value {
+      margin-top: 8px;
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+    }
+    .board, .panel {
+      margin-top: 18px;
+      padding: 18px;
+    }
+    .row-grid {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr;
+      gap: 16px;
+    }
+    .board-list, .window-list { display: grid; gap: 12px; }
+    .ticker-row {
+      display: grid;
+      grid-template-columns: 70px 1.25fr repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      align-items: center;
+      padding: 16px 18px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(51, 65, 85, 0.94), rgba(30, 41, 59, 0.94));
+      border: 1px solid rgba(148, 163, 184, 0.14);
+    }
+    .rank-pill {
+      width: 40px;
+      height: 40px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(168, 85, 247, 0.16);
+      color: #e9d5ff;
+      font-weight: 800;
+    }
+    .ticker-symbol { font-size: 24px; font-weight: 800; color: #f5ecff; }
+    .ticker-company {
+      margin-top: 4px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .metric-label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .metric-value {
+      margin-top: 6px;
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+    }
+    .bull { color: var(--bull); }
+    .bear { color: var(--bear); }
+    .neutral { color: #cbd5e1; }
+    .mini-panel {
+      border-radius: 18px;
+      background: rgba(23, 32, 51, 0.92);
+      border: 1px solid var(--line);
+      padding: 16px;
+    }
+    .window-row {
+      display: grid;
+      grid-template-columns: 120px 1fr 1fr 90px 90px;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+    }
+    .window-row:last-child { border-bottom: none; }
+    .subtle { color: var(--muted); font-size: 13px; }
+    .empty, .loading { color: var(--muted); padding: 16px 0; }
+    @media (max-width: 1080px) {
+      .summary-grid, .row-grid { grid-template-columns: 1fr 1fr; }
+      .ticker-row { grid-template-columns: 56px 1fr 1fr 1fr; }
+      .window-row { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 720px) {
+      .summary-grid, .row-grid { grid-template-columns: 1fr; }
+      .ticker-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="site-nav">
+    <div class="site-nav-inner">
+      <a class="site-link" href="/">Live Dashboard</a>
+      <a class="site-link" href="/lookup">Single Ticker Tracker</a>
+      <a class="site-link active" href="/correlation">Correlation</a>
+      <a class="site-link" href="/momentum">Momentum</a>
+      <a class="site-link" href="/charts">Charts</a>
+      <a class="site-link" href="/future-modules">Future Modules</a>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <section class="hero">
+      <div class="eyebrow">Rolling window analytics</div>
+      <h1>Correlation</h1>
+      <p>
+        This tab compares rolling 5-minute article windows against recent intraday price movement.
+        The goal is to see whether sentiment build and message density are moving with price in a way
+        that can support later prediction work.
+      </p>
+    </section>
+
+    <div class="summary-grid" id="summaryGrid"></div>
+
+    <section class="board">
+      <div class="eyebrow">Leaderboard</div>
+      <h2>Density and Price Correlation</h2>
+      <p class="subtle">These are the most active names where message traffic and price have shown the strongest current relationship.</p>
+      <div id="leaderboard" class="board-list">
+        <div class="loading">Loading correlation leaders...</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="row-grid">
+        <div class="mini-panel">
+          <div class="eyebrow">Sentiment-linked</div>
+          <h3>Top Sentiment vs Price</h3>
+          <div id="sentimentLinked" class="board-list"></div>
+        </div>
+        <div class="mini-panel">
+          <div class="eyebrow">Rolling windows</div>
+          <h3>Recent Market Windows</h3>
+          <div id="marketWindows" class="window-list"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    function formatSigned(value, digits = 2) {
+      const number = Number(value || 0);
+      return `${number >= 0 ? "+" : ""}${number.toFixed(digits)}`;
+    }
+    function scoreClass(value) {
+      const number = Number(value || 0);
+      if (number > 0.02) return "bull";
+      if (number < -0.02) return "bear";
+      return "neutral";
+    }
+    function formatCurrency(value) {
+      const number = Number(value || 0);
+      return number ? `$${number.toFixed(2)}` : "—";
+    }
+    function formatVolume(value) {
+      const number = Number(value || 0);
+      if (!number) return "—";
+      if (number >= 1000000) return `${(number / 1000000).toFixed(1)}M`;
+      if (number >= 1000) return `${(number / 1000).toFixed(1)}K`;
+      return String(number);
+    }
+    function renderSummary(correlation, marketSession) {
+      const coverage = correlation.quote_coverage || {};
+      const cards = [
+        ["Window Size", `${correlation.window_minutes || 5}m`],
+        ["Step", `${correlation.step_minutes || 1}m`],
+        ["Lookback", `${correlation.lookback_minutes || 90}m`],
+        ["Session", marketSession || "—"],
+        ["Quote Coverage", `${coverage.quoted_ticker_count || 0}/${coverage.tracked_ticker_count || 0}`],
+        ["Correlated Quotes", `${coverage.quoted_leader_count || 0}/${coverage.leader_count || 0}`],
+      ];
+      document.getElementById("summaryGrid").innerHTML = cards.map(([label, value]) => `
+        <article class="summary-card">
+          <div class="summary-label">${label}</div>
+          <div class="summary-value">${value}</div>
+        </article>
+      `).join("");
+    }
+    function renderRows(targetId, rows, primaryField, secondaryField) {
+      const root = document.getElementById(targetId);
+      if (!rows.length) {
+        root.innerHTML = '<div class="empty">Not enough active rolling windows are available yet.</div>';
+        return;
+      }
+      root.innerHTML = rows.map((row, index) => `
+        <article class="ticker-row">
+          <div class="rank-pill">${index + 1}</div>
+          <div>
+            <div class="ticker-symbol">${row.ticker}</div>
+            <div class="ticker-company">${row.company || ""}</div>
+          </div>
+          <div>
+            <div class="metric-label">Price</div>
+            <div class="metric-value">${formatCurrency(row.price)}</div>
+          </div>
+          <div>
+            <div class="metric-label">Change</div>
+            <div class="metric-value ${scoreClass(row.change_pct)}">${formatSigned(row.change_pct)}%</div>
+          </div>
+          <div>
+            <div class="metric-label">${primaryField.label}</div>
+            <div class="metric-value ${scoreClass(row[primaryField.key])}">${formatSigned(row[primaryField.key], 3)}</div>
+          </div>
+          <div>
+            <div class="metric-label">${secondaryField.label}</div>
+            <div class="metric-value ${scoreClass(row[secondaryField.key])}">${formatSigned(row[secondaryField.key], 3)}</div>
+          </div>
+          <div>
+            <div class="metric-label">Articles</div>
+            <div class="metric-value">${row.articles || 0}</div>
+          </div>
+          <div>
+            <div class="metric-label">Volume</div>
+            <div class="metric-value">${formatVolume(row.volume)}</div>
+          </div>
+        </article>
+      `).join("");
+    }
+    function renderWindows(rows) {
+      const root = document.getElementById("marketWindows");
+      if (!rows.length) {
+        root.innerHTML = '<div class="empty">Rolling market windows are still warming up.</div>';
+        return;
+      }
+      root.innerHTML = rows.map((row) => `
+        <div class="window-row">
+          <div>
+            <div class="metric-label">Window End</div>
+            <div class="subtle">${String(row.window_end || "").replace("T", " ").replace("Z", " UTC")}</div>
+          </div>
+          <div>
+            <div class="metric-label">Sentiment Build</div>
+            <div class="metric-value ${scoreClass(row.market_sentiment_build)}">${formatSigned(row.market_sentiment_build, 3)}</div>
+          </div>
+          <div>
+            <div class="metric-label">Message Density</div>
+            <div class="metric-value">${Number(row.market_message_density || 0).toFixed(2)}</div>
+          </div>
+          <div>
+            <div class="metric-label">Articles</div>
+            <div class="metric-value">${row.article_count || 0}</div>
+          </div>
+          <div>
+            <div class="metric-label">Tickers</div>
+            <div class="metric-value">${row.ticker_count || 0}</div>
+          </div>
+        </div>
+      `).join("");
+    }
+    async function loadCorrelation() {
+      const response = await fetch("/api/correlation");
+      const payload = await response.json();
+      const correlation = payload.correlation || {};
+      renderSummary(correlation, payload.market_session);
+      renderRows("leaderboard", correlation.top_density_linked || [], { key: "density_price_corr", label: "Density Corr" }, { key: "sentiment_price_corr", label: "Sentiment Corr" });
+      renderRows("sentimentLinked", correlation.top_sentiment_linked || [], { key: "sentiment_price_corr", label: "Sentiment Corr" }, { key: "density_price_corr", label: "Density Corr" });
+      renderWindows(correlation.market_windows || []);
+    }
+    loadCorrelation().catch(error => {
+      document.getElementById("leaderboard").innerHTML = `<div class="empty">Correlation failed to load: ${error.message}</div>`;
+    });
+  </script>
+</body>
+</html>

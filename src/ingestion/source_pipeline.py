@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
+import re
 import time
 
 from .rss_collectors import build_keywords, collect_baseline_articles, fetch_rss_source
@@ -64,6 +65,7 @@ DEFAULT_SOURCE_CACHE_TTLS = {
     "baseline_rss:marketwatch_topstories": 45,
     "baseline_rss:marketwatch_marketpulse": 45,
     "baseline_rss:sec_press_releases": 180,
+    "baseline_rss:benzinga_news": 90,
     "baseline_rss:prnewswire_all_news": 120,
     "baseline_rss:yahoo_finance": 45,
     "structured_news:tradingview": 60,
@@ -79,6 +81,7 @@ SOURCE_REFRESH_TIERS = {
     "baseline_rss:marketwatch_topstories": "fast",
     "baseline_rss:marketwatch_marketpulse": "fast",
     "baseline_rss:sec_press_releases": "slow",
+    "baseline_rss:benzinga_news": "medium",
     "baseline_rss:prnewswire_all_news": "medium",
     "baseline_rss:yahoo_finance": "fast",
     "structured_news:tradingview": "fast",
@@ -118,6 +121,7 @@ COLD_TICKER_CACHE_TTL_MULTIPLIERS = {
 OFF_HOURS_CACHE_TTL_MULTIPLIERS = {
     "baseline_rss:marketwatch_topstories": 3,
     "baseline_rss:marketwatch_marketpulse": 4,
+    "baseline_rss:benzinga_news": 6,
     "baseline_rss:prnewswire_all_news": 90,
     "baseline_rss:sec_press_releases": 3,
     "baseline_rss:yahoo_finance": 2,
@@ -129,6 +133,11 @@ OFF_HOURS_CACHE_TTL_MULTIPLIERS = {
     "structured_news:tradingview": 2,
     "structured_news:stocktwits": 2,
 }
+
+ROTATING_COLD_TICKER_BATCH_SIZE = 8
+ROTATING_COLD_TICKER_EPOCH_SECONDS = 300
+
+NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 
 
 def _cache_ttl_for_key(cache_key: str) -> int:
@@ -185,8 +194,144 @@ def _trim_cached_rows(cached_rows: list[dict[str, Any]] | None, limit: int | Non
     return list(cached_rows[:limit])
 
 
+def _scheduled_ticker_refreshes(
+    entries: list[dict[str, Any]],
+    *,
+    active_ticker_set: set[str],
+    now_epoch: float,
+) -> set[str]:
+    active = {
+        str(entry.get("ticker", "")).strip().upper()
+        for entry in entries
+        if str(entry.get("ticker", "")).strip().upper() in active_ticker_set
+    }
+    cold_entries = [
+        str(entry.get("ticker", "")).strip().upper()
+        for entry in entries
+        if str(entry.get("ticker", "")).strip().upper()
+        and str(entry.get("ticker", "")).strip().upper() not in active
+    ]
+    if not cold_entries:
+        return active
+
+    batch_size = max(1, min(ROTATING_COLD_TICKER_BATCH_SIZE, len(cold_entries)))
+    rotation_index = int(now_epoch // ROTATING_COLD_TICKER_EPOCH_SECONDS) % len(cold_entries)
+    rotating = {
+        cold_entries[(rotation_index + offset) % len(cold_entries)]
+        for offset in range(batch_size)
+    }
+    return active | rotating
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _normalize_match_text(text: str) -> str:
+    return " ".join(NON_ALNUM_RE.sub(" ", str(text or "").lower()).split())
+
+
+def _compact_match_text(text: str) -> str:
+    return "".join(NON_ALNUM_RE.sub("", str(text or "").lower()).split())
+
+
+SHARED_MATCH_GENERIC_TERMS = {
+    "asset management",
+    "card spending",
+    "cloud",
+    "commercial banking",
+    "consumer",
+    "cross border",
+    "database",
+    "deposits",
+    "energy",
+    "ev",
+    "exchange",
+    "financial",
+    "franchise",
+    "global banking",
+    "investment banking",
+    "lending",
+    "market data",
+    "membership",
+    "menu",
+    "mortgage tech",
+    "network",
+    "parks",
+    "payments",
+    "premium cards",
+    "regional bank",
+    "same store sales",
+    "services",
+    "streaming",
+    "trading",
+    "transactions",
+    "travel",
+    "warehouse",
+    "wall street",
+    "wealth",
+}
+
+
+def _contains_exact_keyword(text_parts: list[str], keywords: list[str]) -> bool:
+    normalized_parts = [_normalize_match_text(part) for part in text_parts if str(part).strip()]
+    compact_parts = [_compact_match_text(part) for part in text_parts if str(part).strip()]
+    token_sets = [set(part.split()) for part in normalized_parts]
+
+    for keyword in keywords:
+        normalized_keyword = _normalize_match_text(keyword)
+        compact_keyword = _compact_match_text(keyword)
+        if not normalized_keyword:
+            continue
+
+        if " " in normalized_keyword:
+            for normalized_part, compact_part in zip(normalized_parts, compact_parts):
+                if f" {normalized_keyword} " in f" {normalized_part} ":
+                    return True
+                if len(compact_keyword) >= 5 and compact_keyword in compact_part:
+                    return True
+            continue
+
+        for tokens, compact_part in zip(token_sets, compact_parts):
+            if normalized_keyword in tokens:
+                return True
+            if len(compact_keyword) >= 4 and compact_keyword in compact_part:
+                return True
+    return False
+
+
+def _shared_match_keywords(entry: dict[str, Any]) -> list[str]:
+    ticker = str(entry.get("ticker", "") or "").strip()
+    company = str(entry.get("company", "") or "").strip()
+    raw_keywords = list(entry.get("keywords", []) or [])
+
+    keywords: list[str] = []
+    if ticker:
+        keywords.append(ticker)
+    if company:
+        keywords.append(company)
+
+    for keyword in raw_keywords:
+        normalized = _normalize_match_text(keyword)
+        if not normalized or normalized in SHARED_MATCH_GENERIC_TERMS:
+            continue
+        tokens = [token for token in normalized.split() if token]
+        distinctive_tokens = [
+            token
+            for token in tokens
+            if len(token) >= 5 and token not in SHARED_MATCH_GENERIC_TERMS
+        ]
+
+        # Shared-pool fanout should rely on ticker/company identity and only a
+        # small set of distinctive aliases. Generic watchlist context terms are
+        # useful for a manual single-ticker search, but too noisy at scale.
+        if len(tokens) > 2:
+            continue
+        if not distinctive_tokens:
+            continue
+        keywords.append(str(keyword).strip())
+
+    return list(dict.fromkeys(value for value in keywords if value))
 
 
 def _article_to_row(article) -> dict[str, Any]:
@@ -322,11 +467,7 @@ def collect_watchlist_candidate_rows(
     cache_payload = load_source_cache(source_cache_file)
     cache_dirty = False
     keywords_by_ticker = {
-        str(entry.get("ticker", "")).upper(): build_keywords(
-            ticker=str(entry.get("ticker", "")),
-            company_name=str(entry.get("company", "")) or None,
-            extra_keywords=entry.get("keywords", []),
-        )
+        str(entry.get("ticker", "")).upper(): _shared_match_keywords(entry)
         for entry in entries
     }
     active_ticker_set = {
@@ -336,17 +477,62 @@ def collect_watchlist_candidate_rows(
     }
     if not active_ticker_set:
         active_ticker_set = set(rows_by_ticker)
-    worker_count = max_workers or max(8, min(24, len(entries) + len(source_keys) + len(struct_keys)))
     now_epoch = time.time()
+    scheduled_ticker_refreshes = _scheduled_ticker_refreshes(
+        entries,
+        active_ticker_set=active_ticker_set,
+        now_epoch=now_epoch,
+    )
+    worker_count = max_workers or max(8, min(24, len(entries) + len(source_keys) + len(struct_keys)))
+    ticker_scoped_story_keys_by_ticker: dict[str, set[tuple[str, str]]] = {
+        ticker: set() for ticker in rows_by_ticker
+    }
 
     def ticker_is_active(ticker: str) -> bool:
         return str(ticker).upper() in active_ticker_set
 
+    def ticker_should_refresh(ticker: str) -> bool:
+        return str(ticker).upper() in scheduled_ticker_refreshes
+
     def distribute_row(row: dict[str, Any], *, text_parts: list[str]) -> int:
         matched = 0
         for ticker, keywords in keywords_by_ticker.items():
-            if row_matcher(text_parts, keywords):
+            if keywords and _contains_exact_keyword(text_parts[:2], keywords) and row_matcher(text_parts, keywords):
                 rows_by_ticker[ticker].append(dict(row))
+                matched += 1
+        return matched
+
+    def distribute_ticker_scoped_row(
+        row: dict[str, Any],
+        *,
+        source_scope_ticker: str,
+        text_parts: list[str],
+    ) -> int:
+        normalized_scope = str(source_scope_ticker).strip().upper()
+        row_copy = dict(row)
+        if normalized_scope:
+            row_copy["source_scope_ticker"] = normalized_scope
+
+        matched = 0
+        source_key = str(row_copy.get("source_key", "") or "")
+        story_key = str(
+            row_copy.get("canonical_link")
+            or row_copy.get("link")
+            or row_copy.get("normalized_title_key")
+            or row_copy.get("title")
+            or ""
+        )
+        for ticker, keywords in keywords_by_ticker.items():
+            exact_keyword_hit = _contains_exact_keyword(text_parts[:2], keywords)
+            ticker_matches = ticker == normalized_scope or (exact_keyword_hit and row_matcher(text_parts, keywords))
+            if ticker_matches:
+                dedupe_key = (source_key, story_key)
+                seen_story_keys = ticker_scoped_story_keys_by_ticker.setdefault(ticker, set())
+                if story_key and dedupe_key in seen_story_keys:
+                    continue
+                rows_by_ticker[ticker].append(dict(row_copy))
+                if story_key:
+                    seen_story_keys.add(dedupe_key)
                 matched += 1
         return matched
 
@@ -372,11 +558,12 @@ def collect_watchlist_candidate_rows(
 
     def record_cached_ticker_rows(source_key: str, ticker: str, cached_rows: list[dict[str, Any]], cache_age_seconds: float) -> None:
         matched_total = 0
-        keywords = keywords_by_ticker[ticker]
         for row in cached_rows:
-            if row_matcher([row.get("title", ""), row.get("summary", ""), row.get("summary", "")], keywords):
-                rows_by_ticker[ticker].append(dict(row))
-                matched_total += 1
+            matched_total += distribute_ticker_scoped_row(
+                dict(row),
+                source_scope_ticker=ticker,
+                text_parts=[row.get("title", ""), row.get("summary", ""), row.get("summary", "")],
+            )
         source = RSS_SOURCES[source_key]
         source_health.append(
             SourceHealthRecord(
@@ -430,16 +617,16 @@ def collect_watchlist_candidate_rows(
     ) -> None:
         matched_total = 0
         fetched_total = 0
-        keywords = keywords_by_ticker[ticker]
         for row in cached_rows:
             link = str(row.get("link", ""))
             if not include_seen and link in seen_links:
                 continue
             fetched_total += 1
-            row_copy = dict(row)
-            row_copy["source_scope_ticker"] = ticker
-            rows_by_ticker[ticker].append(row_copy)
-            matched_total += 1
+            matched_total += distribute_ticker_scoped_row(
+                dict(row),
+                source_scope_ticker=ticker,
+                text_parts=[row.get("title", ""), row.get("summary", "")],
+            )
             if link:
                 newly_seen.add(link)
         source = STRUCTURED_SOURCES[source_key]
@@ -502,6 +689,7 @@ def collect_watchlist_candidate_rows(
                 if source.is_ticker_specific:
                     for entry in entries:
                         ticker = str(entry.get("ticker", "")).upper()
+                        should_refresh = ticker_should_refresh(ticker)
                         cache_key = f"baseline_rss:{source_key}:{ticker}"
                         cached_rows, cache_age_seconds = get_cached_rows(
                             cache_payload,
@@ -511,6 +699,8 @@ def collect_watchlist_candidate_rows(
                         )
                         if cached_rows is not None:
                             record_cached_ticker_rows(source_key, ticker, cached_rows, cache_age_seconds)
+                            continue
+                        if not should_refresh:
                             continue
                         futures.append(
                             {
@@ -546,6 +736,7 @@ def collect_watchlist_candidate_rows(
                 if source.is_ticker_specific:
                     for entry in entries:
                         ticker = str(entry.get("ticker", "")).upper()
+                        should_refresh = ticker_should_refresh(ticker)
                         effective_limit = _effective_structured_limit(
                             source_key,
                             structured_limit,
@@ -566,6 +757,8 @@ def collect_watchlist_candidate_rows(
                                 cached_rows,
                                 cache_age_seconds,
                             )
+                            continue
+                        if not should_refresh:
                             continue
                         futures.append(
                             {
@@ -663,10 +856,11 @@ def collect_watchlist_candidate_rows(
                     for article in articles:
                         row = _article_to_row(article)
                         cached_source_rows.append(dict(row))
-                        keywords = keywords_by_ticker[ticker]
-                        if row_matcher([article.title, article.summary, article.text], keywords):
-                            rows_by_ticker[ticker].append(row)
-                            matched_total += 1
+                        matched_total += distribute_ticker_scoped_row(
+                            row,
+                            source_scope_ticker=ticker,
+                            text_parts=[article.title, article.summary, article.text],
+                        )
                     set_cached_rows(cache_payload, cache_key=cache_key, rows=cached_source_rows)
                     cache_dirty = True
                     source_health.append(
@@ -715,8 +909,11 @@ def collect_watchlist_candidate_rows(
                         if not include_seen and headline.link in seen_links:
                             continue
                         fetched_total += 1
-                        rows_by_ticker[ticker].append(row)
-                        matched_total += 1
+                        matched_total += distribute_ticker_scoped_row(
+                            row,
+                            source_scope_ticker=ticker,
+                            text_parts=[headline.title, headline.summary],
+                        )
                         if headline.link:
                             newly_seen.add(headline.link)
                     set_cached_rows(cache_payload, cache_key=cache_key, rows=cached_source_rows)

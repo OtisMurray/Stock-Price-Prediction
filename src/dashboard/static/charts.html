@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Charts</title>
+  <style>
+    :root {
+      --bg: #f3f5ef;
+      --panel: #fffdf8;
+      --ink: #13233a;
+      --muted: #5e6d7f;
+      --line: #dbe4d2;
+      --accent: #0f766e;
+      --pale-blue: #e8eff7;
+      --pale-amber: #f7f0dc;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      background:
+        radial-gradient(circle at top left, rgba(15,118,110,0.08), transparent 28%),
+        linear-gradient(180deg, #f9faf7 0%, var(--bg) 100%);
+      color: var(--ink);
+    }
+    .site-nav {
+      padding: 16px 20px 0;
+    }
+    .site-nav-inner {
+      max-width: 1180px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .site-link {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 10px 14px;
+      background: rgba(255,255,255,0.88);
+      border: 1px solid var(--line);
+      box-shadow: 0 8px 18px rgba(19, 35, 58, 0.06);
+      color: var(--ink);
+      text-decoration: none;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .site-link.active {
+      background: linear-gradient(135deg, rgba(180, 83, 9, 0.18), rgba(23,61,109,0.14));
+      border-color: rgba(180, 83, 9, 0.34);
+      color: #8a4600;
+    }
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 20px 40px;
+    }
+    .hero, .panel, .mini-card {
+      background: rgba(255,255,255,0.9);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 18px;
+      box-shadow: 0 12px 30px rgba(19, 35, 58, 0.06);
+    }
+    .hero {
+      border-top: 4px solid #b45309;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 42px;
+      line-height: 1;
+      letter-spacing: -0.03em;
+    }
+    h2 {
+      margin: 0 0 10px;
+      font-size: 24px;
+      letter-spacing: -0.03em;
+    }
+    h3 {
+      margin: 0 0 8px;
+      font-size: 20px;
+    }
+    p, li {
+      color: var(--muted);
+      font-family: Arial, Helvetica, sans-serif;
+      line-height: 1.5;
+    }
+    .grid {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .mini-card {
+      background: rgba(255,255,255,0.94);
+    }
+    .mini-card.current {
+      background: var(--pale-blue);
+    }
+    .mini-card.next {
+      background: var(--pale-amber);
+    }
+    .eyebrow {
+      display: inline-block;
+      margin-bottom: 12px;
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #0f5c57;
+      background: rgba(15,118,110,0.10);
+      border: 1px solid rgba(15,118,110,0.18);
+    }
+    .panel {
+      margin-top: 18px;
+    }
+    ul {
+      margin: 0;
+      padding-left: 20px;
+    }
+    @media (max-width: 960px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="site-nav">
+    <div class="site-nav-inner">
+      <a class="site-link" href="/">Live Dashboard</a>
+      <a class="site-link" href="/lookup">Single Ticker Tracker</a>
+      <a class="site-link" href="/correlation">Correlation</a>
+      <a class="site-link" href="/momentum">Momentum</a>
+      <a class="site-link active" href="/charts">Charts</a>
+      <a class="site-link" href="/future-modules">Future Modules</a>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div class="hero">
+      <h1>Charts</h1>
+      <p>
+        This page is a safe placeholder for the later prediction-and-visualization layer. The goal is to let you
+        search a ticker, inspect predicted candlestick movement, and compare projected direction against actual price behavior
+        once the prediction pipeline is finalized.
+      </p>
+    </div>
+
+    <div class="grid">
+      <div class="mini-card current">
+        <div class="eyebrow">Live Now</div>
+        <h3>Feed Readouts</h3>
+        <p>The main dashboard already summarizes sentiment mix, source visibility, categories, and momentum windows.</p>
+      </div>
+      <div class="mini-card next">
+        <div class="eyebrow">Planned Next</div>
+        <h3>Ticker Search</h3>
+        <p>A dedicated search box will let you open one ticker and inspect its historical sentiment buildup before prediction review.</p>
+      </div>
+      <div class="mini-card next">
+        <div class="eyebrow">Planned Next</div>
+        <h3>Predicted Candlesticks</h3>
+        <p>This section will later render prediction-driven candle paths and confidence overlays after the model layer is finalized.</p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Planned Chart Modules</h2>
+      <ul>
+        <li>Predicted candlestick path by ticker and time window.</li>
+        <li>Momentum overlays showing how sentiment builds over 1-hour, 6-hour, and 24-hour windows.</li>
+        <li>Category-aware breakdowns such as markets, economy, filings, press releases, commodities, and crypto.</li>
+        <li>Actual-versus-predicted comparisons once the forecasting layer is producing stored outputs.</li>
+      </ul>
+    </div>
+  </div>
+</body>
+</html>

@@ -51,6 +51,26 @@ RSS_SOURCES: dict[str, RSSSource] = {
         notes="Official SEC press release RSS feed.",
         quality_tier="secondary_structured",
     ),
+    "benzinga_news": RSSSource(
+        key="benzinga_news",
+        name="Benzinga News",
+        url_template="https://www.benzinga.com/feed",
+        notes=(
+            "Optional Benzinga RSS source. Keep it out of the default baseline path until it is "
+            "validated under the current hosting/runtime environment."
+        ),
+        quality_tier="secondary_structured",
+    ),
+    "reuters_business": RSSSource(
+        key="reuters_business",
+        name="Reuters Business News",
+        url_template="https://feeds.reuters.com/reuters/businessNews",
+        notes=(
+            "Optional Reuters RSS source. Reuters coverage already appears indirectly through "
+            "TradingView syndication, but this definition allows direct experiments outside the hot path."
+        ),
+        quality_tier="secondary_structured",
+    ),
     "prnewswire_all_news": RSSSource(
         key="prnewswire_all_news",
         name="PR Newswire All News Releases",
@@ -67,6 +87,7 @@ DEFAULT_BASELINE_SOURCE_KEYS = [
     "marketwatch_topstories",
     "marketwatch_marketpulse",
     "sec_press_releases",
+    "benzinga_news",
     "prnewswire_all_news",
 ]
 

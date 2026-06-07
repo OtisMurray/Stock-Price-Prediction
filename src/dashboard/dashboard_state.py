@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import math
+import os
 from pathlib import Path
 import sys
 import threading
@@ -17,7 +19,12 @@ if str(repo_root) not in sys.path:
 from src.runners.collect_watchlist_snapshot import build_watchlist_snapshot
 from src.ingestion.rss_sources import RSS_SOURCES
 from src.ingestion.structured_sources import STRUCTURED_SOURCES
-from src.analysis import score_article_sentiment, summarize_article_sentiment
+from src.analysis import score_article_sentiment, sentiment_runtime_status, summarize_article_sentiment
+from src.dashboard.market_analytics import (
+    build_correlation_snapshot,
+    build_momentum_marketboard,
+    fetch_watchlist_quote_snapshot,
+)
 from src.dashboard.translation_utils import likely_non_english
 from src.storage import (
     fetch_latest_market_article_pool,
@@ -26,10 +33,12 @@ from src.storage import (
     fetch_latest_watchlist_snapshot,
     fetch_ticker_source_history,
     persist_watchlist_snapshot,
+    refresh_story_sentiment_snapshots,
 )
 from src.ingestion.timestamp_utils import US_MARKET_TZ, parse_published_datetime, us_equity_market_session
 
 HOT_TICKER_LIMIT = 20
+AUTO_FINBERT_DEFAULT_LIMIT = 750
 SOURCE_TIER_PRIORITY = {
     "primary_structured": 0,
     "secondary_structured": 1,
@@ -73,6 +82,107 @@ MACRO_GOVERNMENT_KEYWORDS = (
 MACRO_GOVERNMENT_EVENT_TYPES = {
     "regulatory_or_geopolitical",
 }
+
+MARKETS_CATEGORY_KEYWORDS = (
+    "dow",
+    "s&p",
+    "nasdaq",
+    "wall street",
+    "stock futures",
+    "stocks today",
+    "market today",
+    "markets",
+    "treasury yields",
+    "bond market",
+    "risk appetite",
+    "market pulse",
+)
+
+CRYPTO_CATEGORY_KEYWORDS = (
+    "crypto",
+    "bitcoin",
+    "ethereum",
+    "xrp",
+    "solana",
+    "stablecoin",
+    "token",
+    "defi",
+    "blockchain",
+)
+
+COMMODITIES_CATEGORY_KEYWORDS = (
+    "oil",
+    "wti",
+    "brent",
+    "crude",
+    "natural gas",
+    "gold",
+    "silver",
+    "copper",
+    "commodity",
+    "commodities",
+    "opec",
+)
+
+FILING_CATEGORY_KEYWORDS = (
+    "10-k",
+    "10-q",
+    "8-k",
+    "13f",
+    "13d",
+    "proxy statement",
+    "sec filing",
+    "annual report",
+    "quarterly report",
+    "form s-",
+)
+
+PRESS_RELEASE_SOURCE_KEYS = {
+    "pr_newswire",
+    "pr_newswire_all",
+    "access_newswire",
+    "globe_newswire",
+}
+
+PRESS_RELEASE_SOURCE_NAMES = {
+    "pr newswire",
+    "access newswire",
+    "globenewswire",
+}
+
+CATEGORY_PRIORITY = (
+    "economy",
+    "filings",
+    "press_releases",
+    "crypto",
+    "commodities",
+    "markets",
+    "equities",
+)
+
+CATEGORY_LABELS = {
+    "equities": "Equities",
+    "markets": "Markets",
+    "press_releases": "Press Releases",
+    "crypto": "Crypto",
+    "economy": "Economy",
+    "filings": "Filings",
+    "commodities": "Commodities",
+}
+
+SYNDICATED_PROVIDER_PATTERNS = (
+    ("benzinga.com", "Benzinga"),
+    ("reuters.com", "Reuters"),
+    ("sec.gov", "SEC"),
+)
+
+
+def _running_on_railway() -> bool:
+    return bool(
+        os.environ.get("RAILWAY_PROJECT_ID")
+        or os.environ.get("RAILWAY_SERVICE_ID")
+        or os.environ.get("RAILWAY_ENVIRONMENT_ID")
+    )
 
 
 def market_session_label(reference_dt: datetime | None = None) -> str:
@@ -155,6 +265,25 @@ def parse_args() -> argparse.Namespace:
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+WORKER_HEARTBEAT_DIR = Path("data/cache/workers")
+
+
+def _write_worker_heartbeat(name: str, payload: dict[str, Any]) -> None:
+    WORKER_HEARTBEAT_DIR.mkdir(parents=True, exist_ok=True)
+    path = WORKER_HEARTBEAT_DIR / f"{name}.heartbeat.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _read_worker_heartbeat(name: str) -> dict[str, Any]:
+    path = WORKER_HEARTBEAT_DIR / f"{name}.heartbeat.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 EASTERN_TZ = ZoneInfo("America/New_York")
@@ -341,8 +470,118 @@ def enrich_article_source_metadata(article: dict[str, Any]) -> dict[str, Any]:
     enriched["source_family"] = source_family
     enriched["source_quality_tier"] = quality_tier
     enriched["source_tier_rank"] = SOURCE_TIER_PRIORITY.get(quality_tier, 9)
-    enriched.update(score_article_sentiment(enriched))
+    # Reuse persisted sentiment whenever it already exists in SQLite-backed
+    # article-pool rows; rescoring every visible article at request time can
+    # stall hosted startup and page loads.
+    has_cached_sentiment = any(
+        key in enriched
+        for key in (
+            "sentiment_label",
+            "sentiment_score",
+            "sentiment_confidence",
+            "signal_confidence",
+            "sentiment_pipeline_stage",
+            "sentiment_model_used",
+        )
+    )
+    if not has_cached_sentiment:
+        enriched.update(score_article_sentiment(enriched, allow_finbert=False))
+    raw_source_name = str(enriched.get("source_name", "") or "").strip()
+    provider_name = infer_syndicated_provider(enriched)
+    enriched["provider_name"] = provider_name
+    if provider_name and provider_name.lower() not in raw_source_name.lower():
+        enriched["display_source_name"] = f"{provider_name} via {raw_source_name}" if raw_source_name else provider_name
+    else:
+        enriched["display_source_name"] = raw_source_name or provider_name
+    primary_category, category_tags = classify_article_categories(enriched)
+    enriched["primary_category"] = primary_category
+    enriched["category_tags"] = category_tags
     return enriched
+
+
+def infer_syndicated_provider(article: dict[str, Any]) -> str:
+    source_key = str(article.get("source_key", "") or "").strip().lower()
+    if source_key.startswith("sec"):
+        return "SEC"
+    blobs = " ".join(
+        str(article.get(field, "") or "").lower()
+        for field in (
+            "link",
+            "canonical_link",
+            "summary",
+            "notes",
+            "title",
+            "source_name",
+        )
+    )
+    for needle, label in SYNDICATED_PROVIDER_PATTERNS:
+        if needle in blobs:
+            return label
+    if "provider: reuters" in blobs:
+        return "Reuters"
+    return ""
+
+
+def classify_article_categories(article: dict[str, Any]) -> tuple[str, list[str]]:
+    title = str(article.get("title", "") or "").lower()
+    summary = str(article.get("summary", "") or "").lower()
+    source_key = str(article.get("source_key", "") or "").lower()
+    source_name = str(article.get("source_name", "") or "").lower()
+    event_type = str(article.get("event_type", "") or "").lower()
+    event_types = [
+        str(value).lower()
+        for value in article.get("event_types", []) or []
+        if str(value).strip()
+    ]
+    text_blob = " ".join(
+        part
+        for part in (
+            title,
+            summary,
+            event_type,
+            " ".join(event_types),
+        )
+        if part
+    )
+    matched_tickers = article.get("matched_tickers", []) or []
+    matched_ticker_count = int(article.get("matched_ticker_count", len(matched_tickers)) or len(matched_tickers))
+
+    tags: set[str] = set()
+
+    if source_key in PRESS_RELEASE_SOURCE_KEYS or source_name in PRESS_RELEASE_SOURCE_NAMES:
+        tags.add("press_releases")
+
+    if source_key.startswith("sec") or any(keyword in text_blob for keyword in FILING_CATEGORY_KEYWORDS):
+        tags.add("filings")
+
+    if any(keyword in text_blob for keyword in MACRO_GOVERNMENT_KEYWORDS):
+        tags.add("economy")
+
+    if any(keyword in text_blob for keyword in CRYPTO_CATEGORY_KEYWORDS):
+        tags.add("crypto")
+
+    if any(keyword in text_blob for keyword in COMMODITIES_CATEGORY_KEYWORDS):
+        tags.add("commodities")
+
+    if any(keyword in text_blob for keyword in MARKETS_CATEGORY_KEYWORDS):
+        tags.add("markets")
+
+    if (
+        matched_ticker_count > 0
+        or event_type in {"earnings_or_guidance", "analyst_rating_or_target", "general_company_focus", "executive_change"}
+        or any(
+            value in {"earnings_or_guidance", "analyst_rating_or_target", "general_company_focus", "executive_change"}
+            for value in event_types
+        )
+    ):
+        tags.add("equities")
+
+    if not tags:
+        tags.add("equities")
+
+    ordered_tags = [category for category in CATEGORY_PRIORITY if category in tags]
+    primary_category = ordered_tags[0] if ordered_tags else "equities"
+    return primary_category, ordered_tags
 
 
 def flatten_feed_rows(tickers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -361,7 +600,14 @@ def flatten_feed_rows(tickers: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 published_at = str(row.get("published_at", ""))
                 published_raw = str(row.get("published_raw", ""))
                 collected_at = str(row.get("collected_at", ""))
-                sentiment_fields = score_article_sentiment(row)
+                sentiment_fields = score_article_sentiment(row, allow_finbert=False)
+                primary_category, category_tags = classify_article_categories(
+                    {
+                        **row,
+                        "matched_ticker_count": 1 if ticker else 0,
+                        "matched_tickers": [ticker] if ticker else [],
+                    }
+                )
                 rows.append(
                     {
                         "story_key": str(row.get("story_key", "")),
@@ -375,7 +621,9 @@ def flatten_feed_rows(tickers: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         "rank": rank,
                         "title": str(row.get("title", "")),
                         "link": str(row.get("link", "")),
-                        "source_name": str(row.get("source_name", "")),
+                        "source_name": str(row.get("display_source_name", row.get("source_name", ""))),
+                        "source_origin_name": str(row.get("source_name", "")),
+                        "provider_name": str(row.get("provider_name", "")),
                         "source_key": source_key,
                         "source_family": source_family,
                         "source_quality_tier": quality_tier,
@@ -394,12 +642,26 @@ def flatten_feed_rows(tickers: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         "last_seen_at": str(row.get("last_seen_at", "")),
                         "collected_at": collected_at,
                         "coverage_count": int(row.get("coverage_count", 0) or 0),
+                        "exposure_observation_count": int(row.get("coverage_count", 0) or 0),
+                        "exposure_source_count": len(row.get("coverage_sources", []) or []),
+                        "exposure_weight": _row_exposure_weight(row),
                         "summary": str(row.get("summary", "")),
                         "is_new": bool(row.get("is_new")),
                         "needs_translation": likely_non_english(
                             f"{str(row.get('title', '') or '')} {str(row.get('summary', '') or '')}"
                         ),
+                        "primary_category": primary_category,
+                        "category_tags": category_tags,
                         **sentiment_fields,
+                        "prediction_weight": round(
+                            _prediction_weight(
+                                sentiment_score=float(sentiment_fields.get("sentiment_score", 0.0) or 0.0),
+                                sentiment_confidence=float(sentiment_fields.get("sentiment_confidence", 0.0) or 0.0),
+                                ticker_relevance=float(sentiment_fields.get("ticker_relevance_confidence", 0.0) or 0.0),
+                                exposure_weight=_row_exposure_weight(row),
+                            ),
+                            3,
+                        ),
                     }
                 )
 
@@ -458,7 +720,9 @@ def flatten_article_pool_rows(
                 "rank": rank,
                 "title": str(article.get("title", "")),
                 "link": str(article.get("link", "")),
-                "source_name": str(article.get("source_name", "")),
+                "source_name": str(article.get("display_source_name", article.get("source_name", ""))),
+                "source_origin_name": str(article.get("source_name", "")),
+                "provider_name": str(article.get("provider_name", "")),
                 "source_key": str(article.get("source_key", "")),
                 "source_family": str(article.get("source_family", "")),
                 "source_quality_tier": str(article.get("source_quality_tier", "")),
@@ -485,6 +749,8 @@ def flatten_article_pool_rows(
                 "is_new": bool(article.get("is_new")),
                 "matched_tickers": matched_tickers,
                 "matched_ticker_count": matched_ticker_count,
+                "primary_category": str(article.get("primary_category", "")),
+                "category_tags": list(article.get("category_tags", []) or []),
                 "needs_translation": likely_non_english(str(article.get("title", "") or "")),
                 "sentiment_label": str(article.get("sentiment_label", "")),
                 "sentiment_score": float(article.get("sentiment_score", 0.0) or 0.0),
@@ -508,6 +774,15 @@ def flatten_article_pool_rows(
                 "market_impact_bias": str(article.get("market_impact_bias", "")),
                 "sentiment_positive_markers": list(article.get("sentiment_positive_markers", []) or []),
                 "sentiment_negative_markers": list(article.get("sentiment_negative_markers", []) or []),
+                "prediction_weight": round(
+                    _prediction_weight(
+                        sentiment_score=float(article.get("sentiment_score", 0.0) or 0.0),
+                        sentiment_confidence=float(article.get("sentiment_confidence", 0.0) or 0.0),
+                        ticker_relevance=float(article.get("ticker_relevance_confidence", 0.0) or 0.0),
+                        exposure_weight=float(article.get("exposure_weight", 0.0) or 0.0) or 1.0,
+                    ),
+                    3,
+                ),
             }
         )
 
@@ -647,6 +922,455 @@ def build_source_visibility_counts(article_pool: dict[str, Any]) -> dict[tuple[s
     return counts
 
 
+def _parse_dashboard_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _row_reference_datetime(row: dict[str, Any]) -> datetime | None:
+    for key in ("published_at", "last_seen_at", "collected_at", "first_seen_at"):
+        parsed = _parse_dashboard_datetime(row.get(key))
+        if parsed:
+            return parsed
+    return None
+
+
+def _row_exposure_weight(row: dict[str, Any]) -> float:
+    explicit_weight = float(row.get("exposure_weight", 0.0) or 0.0)
+    if explicit_weight > 0:
+        return explicit_weight
+    observation_count = int(
+        row.get("exposure_observation_count", row.get("coverage_count", 0)) or 0
+    )
+    source_count = int(
+        row.get("exposure_source_count", len(row.get("coverage_sources", []) or [])) or 0
+    )
+    observation_component = min(math.log1p(max(observation_count, 1)) * 0.45, 1.1)
+    source_component = min(source_count * 0.12, 0.65)
+    return max(1.0, 1.0 + observation_component + source_component)
+
+
+def _prediction_weight(
+    *,
+    sentiment_score: float,
+    sentiment_confidence: float,
+    ticker_relevance: float,
+    exposure_weight: float,
+) -> float:
+    sentiment_intensity = abs(sentiment_score)
+    if sentiment_intensity <= 0:
+        return 0.0
+    sentiment_floor = max(sentiment_intensity, 0.06)
+    confidence_support = max(sentiment_confidence, 0.2)
+    relevance_support = max(ticker_relevance, 0.2)
+    exposure_support = max(exposure_weight, 1.0)
+    return sentiment_floor * confidence_support * relevance_support * exposure_support
+
+
+def build_momentum_snapshot(
+    rows: list[dict[str, Any]],
+    watchlist_metadata: dict[str, dict[str, str]],
+    *,
+    reference_dt: datetime | None = None,
+) -> dict[str, Any]:
+    if reference_dt is not None:
+        now_dt = reference_dt
+    else:
+        latest_row_dt = max(
+            (_row_reference_datetime(row) for row in rows),
+            default=None,
+        )
+        now_dt = latest_row_dt or datetime.now(timezone.utc)
+    ticker_scores: dict[str, dict[str, Any]] = {}
+    market_windows = {"1h": 0.0, "6h": 0.0, "24h": 0.0}
+    density_windows = {"1h": 0.0, "6h": 0.0, "24h": 0.0}
+
+    for row in rows:
+        matched_tickers = [
+            str(value).strip().upper()
+            for value in row.get("matched_tickers", []) or []
+            if str(value).strip()
+        ]
+        if not matched_tickers:
+            ticker_text = str(row.get("ticker", "")).strip().upper()
+            if ticker_text:
+                matched_tickers = [ticker_text]
+        if not matched_tickers:
+            continue
+
+        row_dt = _row_reference_datetime(row)
+        if not row_dt:
+            continue
+
+        age_hours = max((now_dt - row_dt).total_seconds() / 3600.0, 0.0)
+        if age_hours > 24:
+            continue
+
+        sentiment_score = float(row.get("sentiment_score", 0.0) or 0.0)
+        sentiment_confidence = max(0.25, float(row.get("sentiment_confidence", 0.0) or 0.0))
+        ticker_relevance = max(0.25, float(row.get("ticker_relevance_confidence", 0.0) or 0.0))
+        signal_confidence = max(0.25, float(row.get("signal_confidence", sentiment_confidence) or sentiment_confidence))
+        exposure_weight = _row_exposure_weight(row)
+        message_density = max(
+            1.0,
+            float(
+                row.get(
+                    "exposure_observation_count",
+                    row.get("coverage_count", 1),
+                )
+                or 1.0
+            ),
+        )
+        sentiment_support = (0.82 * sentiment_confidence) + (0.18 * signal_confidence)
+        matched_divisor = max(len(matched_tickers), 1)
+        contribution = (sentiment_score * ticker_relevance * sentiment_support * exposure_weight) / matched_divisor
+        density_contribution = ((message_density * 0.45) + (exposure_weight * 0.55)) / matched_divisor
+
+        if abs(contribution) < 0.004:
+            continue
+
+        if age_hours <= 1:
+            window_key = "1h"
+        elif age_hours <= 6:
+            window_key = "6h"
+        else:
+            window_key = "24h"
+
+        market_windows[window_key] += contribution
+        density_windows[window_key] += density_contribution
+
+        for ticker in matched_tickers:
+            metadata = watchlist_metadata.get(ticker, {})
+            item = ticker_scores.setdefault(
+                ticker,
+                {
+                    "ticker": ticker,
+                    "company": str(metadata.get("company", "")),
+                    "sector": str(metadata.get("sector", "")),
+                    "industry": str(metadata.get("industry", "")),
+                    "article_count": 0,
+                    "bullish_count": 0,
+                    "bearish_count": 0,
+                    "source_names": set(),
+                    "message_count": 0.0,
+                    "one_hour_score": 0.0,
+                    "six_hour_score": 0.0,
+                    "twentyfour_hour_score": 0.0,
+                    "one_hour_density": 0.0,
+                    "six_hour_density": 0.0,
+                    "twentyfour_hour_density": 0.0,
+                    "latest_seen_at": "",
+                },
+            )
+            item["article_count"] += 1
+            item["message_count"] += density_contribution
+            item["source_names"].add(str(row.get("source_name", "") or ""))
+            item["latest_seen_at"] = max(item["latest_seen_at"], str(row.get("last_seen_at", "") or str(row.get("collected_at", "")) or ""))
+            if str(row.get("sentiment_label", "")).lower() == "bullish":
+                item["bullish_count"] += 1
+            elif str(row.get("sentiment_label", "")).lower() == "bearish":
+                item["bearish_count"] += 1
+
+            if window_key == "1h":
+                item["one_hour_score"] += contribution
+                item["one_hour_density"] += density_contribution
+            elif window_key == "6h":
+                item["six_hour_score"] += contribution
+                item["six_hour_density"] += density_contribution
+            else:
+                item["twentyfour_hour_score"] += contribution
+                item["twentyfour_hour_density"] += density_contribution
+
+    ranked_rows: list[dict[str, Any]] = []
+    for item in ticker_scores.values():
+        momentum_score = (
+            item["one_hour_score"] * 1.25
+            + item["six_hour_score"] * 0.7
+            + item["twentyfour_hour_score"] * 0.35
+        )
+        message_density_score = (
+            item["one_hour_density"] * 1.25
+            + item["six_hour_density"] * 0.7
+            + item["twentyfour_hour_density"] * 0.35
+        )
+        if momentum_score >= 0.16:
+            label = "Bullish Build"
+        elif momentum_score <= -0.16:
+            label = "Bearish Build"
+        else:
+            label = "Mixed"
+        ranked_rows.append(
+            {
+                "ticker": item["ticker"],
+                "company": item["company"],
+                "sector": item["sector"],
+                "industry": item["industry"],
+                "momentum_score": round(momentum_score, 3),
+                "message_density_score": round(message_density_score, 3),
+                "one_hour_score": round(item["one_hour_score"], 3),
+                "six_hour_score": round(item["six_hour_score"], 3),
+                "twentyfour_hour_score": round(item["twentyfour_hour_score"], 3),
+                "one_hour_density": round(item["one_hour_density"], 3),
+                "six_hour_density": round(item["six_hour_density"], 3),
+                "twentyfour_hour_density": round(item["twentyfour_hour_density"], 3),
+                "article_count": item["article_count"],
+                "message_count": round(item["message_count"], 3),
+                "source_count": len([value for value in item["source_names"] if value]),
+                "bullish_count": item["bullish_count"],
+                "bearish_count": item["bearish_count"],
+                "label": label,
+                "latest_seen_at": item["latest_seen_at"],
+            }
+        )
+
+    positive_rows = sorted(
+        [row for row in ranked_rows if row["momentum_score"] > 0],
+        key=lambda row: (-row["momentum_score"], -row["one_hour_score"], row["ticker"]),
+    )
+    negative_rows = sorted(
+        [row for row in ranked_rows if row["momentum_score"] < 0],
+        key=lambda row: (row["momentum_score"], row["one_hour_score"], row["ticker"]),
+    )
+
+    return {
+        "top_positive": positive_rows[:8],
+        "top_negative": negative_rows[:8],
+        "leaders": sorted(ranked_rows, key=lambda row: (-abs(row["momentum_score"]), row["ticker"]))[:10],
+        "window_totals": {
+            "1h": round(market_windows["1h"], 3),
+            "6h": round(market_windows["6h"], 3),
+            "24h": round(market_windows["24h"], 3),
+        },
+        "message_density_windows": {
+            "1h": round(density_windows["1h"], 3),
+            "6h": round(density_windows["6h"], 3),
+            "24h": round(density_windows["24h"], 3),
+        },
+    }
+
+
+def build_chart_snapshot(
+    rows: list[dict[str, Any]],
+    market_sentiment: dict[str, Any],
+    momentum_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    sentiment_distribution = {
+        "bullish": int(market_sentiment.get("bullish_count", 0) or 0),
+        "bearish": int(market_sentiment.get("bearish_count", 0) or 0),
+        "mixed": int(market_sentiment.get("mixed_count", 0) or 0),
+        "neutral": int(market_sentiment.get("neutral_count", 0) or 0),
+    }
+
+    source_counts: dict[str, int] = {}
+    for row in rows:
+        source_name = str(row.get("source_name", "") or "").strip()
+        if source_name:
+            source_counts[source_name] = source_counts.get(source_name, 0) + 1
+
+    top_sources = [
+        {"label": source_name, "value": count}
+        for source_name, count in sorted(
+            source_counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:6]
+    ]
+
+    momentum_windows = momentum_snapshot.get("window_totals", {})
+    density_windows = momentum_snapshot.get("message_density_windows", {})
+
+    return {
+        "sentiment_distribution": [
+            {"label": "Bullish", "value": sentiment_distribution["bullish"], "tone": "bullish"},
+            {"label": "Bearish", "value": sentiment_distribution["bearish"], "tone": "bearish"},
+            {"label": "Mixed", "value": sentiment_distribution["mixed"], "tone": "mixed"},
+            {"label": "Neutral", "value": sentiment_distribution["neutral"], "tone": "neutral"},
+        ],
+        "source_visibility": top_sources,
+        "market_pulse": [
+            {"label": "1H", "value": float(momentum_windows.get("1h", 0.0) or 0.0)},
+            {"label": "6H", "value": float(momentum_windows.get("6h", 0.0) or 0.0)},
+            {"label": "24H", "value": float(momentum_windows.get("24h", 0.0) or 0.0)},
+        ],
+        "message_density": [
+            {"label": "1H", "value": float(density_windows.get("1h", 0.0) or 0.0), "tone": "accent"},
+            {"label": "6H", "value": float(density_windows.get("6h", 0.0) or 0.0), "tone": "accent"},
+            {"label": "24H", "value": float(density_windows.get("24h", 0.0) or 0.0), "tone": "accent"},
+        ],
+    }
+
+
+def build_category_snapshot(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        category_key = str(row.get("primary_category", "") or "").strip().lower()
+        if not category_key:
+            continue
+        counts[category_key] = counts.get(category_key, 0) + 1
+
+    return [
+        {
+            "key": key,
+            "label": CATEGORY_LABELS.get(key, key.replace("_", " ").title()),
+            "count": count,
+        }
+        for key, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
+def build_sentiment_audit_snapshot(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    total_rows = len(rows)
+    ready_rows = [row for row in rows if row.get("finbert_ready")]
+    active_rows = [
+        row
+        for row in rows
+        if str(row.get("sentiment_pipeline_stage", "")) == "hybrid_finbert_rule"
+    ]
+    rule_rows = [
+        row
+        for row in rows
+        if str(row.get("sentiment_model_used", "") or "rule_based") == "rule_based"
+    ]
+    low_confidence_rows = [
+        row
+        for row in rows
+        if float_value(row.get("sentiment_confidence")) < 0.35
+    ]
+    high_relevance_low_confidence_rows = [
+        row
+        for row in low_confidence_rows
+        if float_value(row.get("ticker_relevance_confidence")) >= 0.55
+    ]
+
+    readiness_reasons: dict[str, int] = {}
+    label_counts: dict[str, int] = {}
+    for row in rows:
+        reason = str(row.get("finbert_readiness_reason", "") or "not_scored")
+        readiness_reasons[reason] = readiness_reasons.get(reason, 0) + 1
+        label = str(row.get("sentiment_label", "") or "neutral").lower()
+        label_counts[label] = label_counts.get(label, 0) + 1
+
+    def sample_row(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "title": str(row.get("title", "")),
+            "ticker": str(row.get("ticker", "")),
+            "matched_tickers": list(row.get("matched_tickers", []) or []),
+            "source_name": str(row.get("source_name", "")),
+            "sentiment_label": str(row.get("sentiment_label", "")),
+            "sentiment_score": float_value(row.get("sentiment_score")),
+            "sentiment_confidence": float_value(row.get("sentiment_confidence")),
+            "ticker_relevance_confidence": float_value(row.get("ticker_relevance_confidence")),
+            "sentiment_model_used": str(row.get("sentiment_model_used", "") or "rule_based"),
+            "finbert_label": str(row.get("finbert_label", "")),
+            "finbert_confidence": float_value(row.get("finbert_confidence")),
+            "finbert_readiness_reason": str(row.get("finbert_readiness_reason", "")),
+            "link": str(row.get("link", "")),
+        }
+
+    active_examples = sorted(
+        active_rows,
+        key=lambda row: (
+            -float_value(row.get("finbert_confidence")),
+            -float_value(row.get("sentiment_confidence")),
+            str(row.get("title", "")),
+        ),
+    )[:4]
+    rule_examples = sorted(
+        rule_rows,
+        key=lambda row: (
+            -float_value(row.get("signal_strength")),
+            -float_value(row.get("ticker_relevance_confidence")),
+            str(row.get("title", "")),
+        ),
+    )[:4]
+    review_examples = sorted(
+        high_relevance_low_confidence_rows or low_confidence_rows,
+        key=lambda row: (
+            -float_value(row.get("ticker_relevance_confidence")),
+            float_value(row.get("sentiment_confidence")),
+            str(row.get("title", "")),
+        ),
+    )[:4]
+    activation_gap_count = max(len(ready_rows) - len(active_rows), 0)
+    recommended_next_actions: list[dict[str, Any]] = []
+    if total_rows and len(ready_rows) < total_rows:
+        recommended_next_actions.append(
+            {
+                "area": "FinBERT readiness",
+                "priority": "high",
+                "count": total_rows - len(ready_rows),
+                "action": "Fix remaining model-input blockers before expanding prediction features.",
+            }
+        )
+    if activation_gap_count:
+        activation_action = (
+            "Run the sentiment snapshot refresh job so ready rows receive stored FinBERT or hybrid outputs."
+            if not active_rows
+            else "Decide whether to force FinBERT on high-confidence rule rows; the current hybrid path intentionally keeps them on rules."
+        )
+        recommended_next_actions.append(
+            {
+                "area": "FinBERT activation",
+                "priority": "high" if activation_gap_count >= max(total_rows * 0.25, 1) else "medium",
+                "count": activation_gap_count,
+                "action": activation_action,
+            }
+        )
+    if high_relevance_low_confidence_rows:
+        recommended_next_actions.append(
+            {
+                "area": "Calibration review",
+                "priority": "medium",
+                "count": len(high_relevance_low_confidence_rows),
+                "action": "Review high-relevance, low-confidence stories and tune event or marker weights.",
+            }
+        )
+    if not recommended_next_actions and total_rows:
+        recommended_next_actions.append(
+            {
+                "area": "Prediction handoff",
+                "priority": "ready",
+                "count": total_rows,
+                "action": "Sentiment coverage is ready to feed prediction and optimization feature engineering.",
+            }
+        )
+
+    return {
+        "total_rows": total_rows,
+        "finbert_ready_count": len(ready_rows),
+        "finbert_active_count": len(active_rows),
+        "finbert_activation_gap_count": activation_gap_count,
+        "rule_based_count": len(rule_rows),
+        "low_confidence_count": len(low_confidence_rows),
+        "high_relevance_low_confidence_count": len(high_relevance_low_confidence_rows),
+        "readiness_reasons": sorted(
+            (
+                {"reason": reason, "count": count}
+                for reason, count in readiness_reasons.items()
+            ),
+            key=lambda item: (-item["count"], item["reason"]),
+        ),
+        "label_counts": sorted(
+            (
+                {"label": label.title(), "count": count}
+                for label, count in label_counts.items()
+            ),
+            key=lambda item: (-item["count"], item["label"]),
+        ),
+        "active_examples": [sample_row(row) for row in active_examples],
+        "rule_based_examples": [sample_row(row) for row in rule_examples],
+        "review_examples": [sample_row(row) for row in review_examples],
+        "recommended_next_actions": recommended_next_actions,
+    }
+
+
 class DashboardState:
     def __init__(
         self,
@@ -674,7 +1398,10 @@ class DashboardState:
         self.sqlite_db = sqlite_db
         self.watchlist_metadata = load_watchlist_metadata(watchlist_file)
         self.lock = threading.Lock()
+        self.analytics_lock = threading.Lock()
         self.update_in_progress = False
+        self.finbert_backfill_in_progress = False
+        self._analytics_cache: dict[str, dict[str, Any]] = {}
 
         self.snapshot: dict[str, Any] = self._load_primary_snapshot()
         persisted = load_json(
@@ -684,15 +1411,21 @@ class DashboardState:
                 "last_refresh_iso": "",
                 "seen_story_ids": [],
                 "last_status": "Dashboard initialized.",
+                "finbert_backfill_status": "",
+                "finbert_backfill_in_progress": False,
             },
         )
         self.last_refresh_epoch = float(persisted.get("last_refresh_epoch", 0.0) or 0.0)
         self.last_refresh_iso = str(persisted.get("last_refresh_iso", ""))
         self.seen_story_ids = set(str(item) for item in persisted.get("seen_story_ids", []))
         self.last_status = str(persisted.get("last_status", "Dashboard initialized."))
+        self.finbert_backfill_status = str(persisted.get("finbert_backfill_status", ""))
+        self.finbert_backfill_in_progress = bool(persisted.get("finbert_backfill_in_progress", False))
 
         if not self.snapshot:
-            self.snapshot = self._run_snapshot_update(mark_all_seen=False)
+            # A startup rebuild should not fabricate a giant "new story" spike
+            # just because the process restarted.
+            self.snapshot = self._run_snapshot_update(mark_all_seen=True)
             self.last_status = "Initial snapshot created for dashboard startup."
             self._persist_state()
 
@@ -710,8 +1443,24 @@ class DashboardState:
             "last_refresh_iso": self.last_refresh_iso,
             "seen_story_ids": sorted(self.seen_story_ids),
             "last_status": self.last_status,
+            "finbert_backfill_status": self.finbert_backfill_status,
+            "finbert_backfill_in_progress": self.finbert_backfill_in_progress,
         }
         self.dashboard_state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _sync_runtime_state_from_disk(self) -> None:
+        if not self.dashboard_state_path.exists():
+            return
+        persisted = load_json(self.dashboard_state_path, {})
+        if not persisted:
+            return
+        self.last_refresh_epoch = float(persisted.get("last_refresh_epoch", self.last_refresh_epoch) or self.last_refresh_epoch)
+        self.last_refresh_iso = str(persisted.get("last_refresh_iso", self.last_refresh_iso or ""))
+        self.last_status = str(persisted.get("last_status", self.last_status or "Dashboard initialized."))
+        self.finbert_backfill_status = str(persisted.get("finbert_backfill_status", self.finbert_backfill_status or ""))
+        self.finbert_backfill_in_progress = bool(
+            persisted.get("finbert_backfill_in_progress", self.finbert_backfill_in_progress)
+        )
 
     def _enrich_ticker_metadata(self, ticker_payload: dict[str, Any]) -> dict[str, Any]:
         ticker_copy = dict(ticker_payload)
@@ -863,12 +1612,243 @@ class DashboardState:
             persist_watchlist_snapshot(self.sqlite_db, annotated)
         return annotated
 
+    def _ensure_watchlist_coverage(self, tickers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        existing_by_ticker = {
+            str(item.get("ticker", "")).strip().upper(): dict(item)
+            for item in tickers
+            if str(item.get("ticker", "")).strip()
+        }
+        covered: list[dict[str, Any]] = []
+        for ticker, metadata in self.watchlist_metadata.items():
+            ticker_key = str(ticker).strip().upper()
+            item = existing_by_ticker.pop(ticker_key, None)
+            if item is None:
+                item = {
+                    "ticker": ticker_key,
+                    "company": str(metadata.get("company", "")),
+                    "sector": str(metadata.get("sector", "")),
+                    "industry": str(metadata.get("industry", "")),
+                    "stories": [],
+                    "related_context": [],
+                    "review_candidates": [],
+                    "rejections": [],
+                    "new_primary_count": 0,
+                    "raw_match_count": 0,
+                    "stats": {
+                        "clustered_story_count": 0,
+                        "related_context_rows": 0,
+                        "review_candidate_rows": 0,
+                    },
+                }
+            covered.append(self._enrich_ticker_metadata(item))
+        return covered
+
+    def _cached_payload(
+        self,
+        cache_key: str,
+        *,
+        ttl_seconds: int,
+        builder: Any,
+    ) -> dict[str, Any]:
+        now_epoch = time.time()
+        with self.analytics_lock:
+            cached = self._analytics_cache.get(cache_key)
+            if cached and (now_epoch - float(cached.get("built_at_epoch", 0.0) or 0.0)) <= ttl_seconds:
+                return dict(cached.get("payload", {}))
+
+        payload = builder()
+        with self.analytics_lock:
+            self._analytics_cache[cache_key] = {
+                "built_at_epoch": now_epoch,
+                "payload": payload,
+            }
+        return payload
+
+    def _auto_finbert_enabled(self) -> bool:
+        default = "1"
+        value = str(os.environ.get("STOCK_DASHBOARD_AUTO_FINBERT", default) or default).strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
+    def _auto_finbert_limit(self) -> int:
+        safe_default = min(AUTO_FINBERT_DEFAULT_LIMIT, 250) if _running_on_railway() else AUTO_FINBERT_DEFAULT_LIMIT
+        raw = str(os.environ.get("STOCK_DASHBOARD_AUTO_FINBERT_LIMIT", safe_default) or safe_default)
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return safe_default
+
+    def _run_post_refresh_finbert_backfill(self) -> dict[str, Any]:
+        if not self.sqlite_db or not self._auto_finbert_enabled():
+            return {
+                "ok": False,
+                "skipped": True,
+                "reason": "disabled",
+            }
+
+        article_pool = fetch_latest_market_article_pool(self.sqlite_db)
+        retained_articles = article_pool.get("articles", []) or []
+        if not retained_articles:
+            return {
+                "ok": False,
+                "skipped": True,
+                "reason": "no_retained_articles",
+            }
+
+        limit = min(len(retained_articles), self._auto_finbert_limit())
+        previous_allow = os.environ.get("ALLOW_RAILWAY_FINBERT")
+        previous_context = os.environ.get("FINBERT_INFERENCE_CONTEXT")
+        previous_disable = os.environ.get("DISABLE_LOCAL_FINBERT")
+        previous_download = os.environ.get("FINBERT_ALLOW_DOWNLOAD")
+        previous_hf_home = os.environ.get("HF_HOME")
+        previous_transformers_cache = os.environ.get("TRANSFORMERS_CACHE")
+        model_cache_dir = Path(self.sqlite_db).expanduser().resolve().parent / "hf_cache"
+        model_cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.environ["ALLOW_RAILWAY_FINBERT"] = "1"
+            os.environ["FINBERT_INFERENCE_CONTEXT"] = "backfill"
+            os.environ["DISABLE_LOCAL_FINBERT"] = "0"
+            os.environ["FINBERT_ALLOW_DOWNLOAD"] = "1"
+            os.environ["HF_HOME"] = str(model_cache_dir)
+            os.environ["TRANSFORMERS_CACHE"] = str(model_cache_dir)
+            return refresh_story_sentiment_snapshots(
+                self.sqlite_db,
+                limit=limit,
+                dry_run=False,
+                force_finbert_ready=True,
+            )
+        finally:
+            if previous_allow is None:
+                os.environ.pop("ALLOW_RAILWAY_FINBERT", None)
+            else:
+                os.environ["ALLOW_RAILWAY_FINBERT"] = previous_allow
+            if previous_context is None:
+                os.environ.pop("FINBERT_INFERENCE_CONTEXT", None)
+            else:
+                os.environ["FINBERT_INFERENCE_CONTEXT"] = previous_context
+            if previous_disable is None:
+                os.environ.pop("DISABLE_LOCAL_FINBERT", None)
+            else:
+                os.environ["DISABLE_LOCAL_FINBERT"] = previous_disable
+            if previous_download is None:
+                os.environ.pop("FINBERT_ALLOW_DOWNLOAD", None)
+            else:
+                os.environ["FINBERT_ALLOW_DOWNLOAD"] = previous_download
+            if previous_hf_home is None:
+                os.environ.pop("HF_HOME", None)
+            else:
+                os.environ["HF_HOME"] = previous_hf_home
+            if previous_transformers_cache is None:
+                os.environ.pop("TRANSFORMERS_CACHE", None)
+            else:
+                os.environ["TRANSFORMERS_CACHE"] = previous_transformers_cache
+
+    def _launch_async_finbert_backfill(self) -> bool:
+        if not self.sqlite_db or not self._auto_finbert_enabled():
+            return False
+        with self.lock:
+            if self.finbert_backfill_in_progress:
+                return False
+            self.finbert_backfill_in_progress = True
+        self.finbert_backfill_status = "FinBERT backfill queued."
+        _write_worker_heartbeat(
+            "finbert_backfill",
+            {
+                "ts": _iso_now(),
+                "pid": os.getpid(),
+                "status": "queued",
+                "in_progress": True,
+                "message": self.finbert_backfill_status,
+            },
+        )
+        self._persist_state()
+
+        def _worker() -> None:
+            try:
+                self.finbert_backfill_status = "FinBERT backfill running on the retained article pool."
+                _write_worker_heartbeat(
+                    "finbert_backfill",
+                    {
+                        "ts": _iso_now(),
+                        "pid": os.getpid(),
+                        "status": "running",
+                        "in_progress": True,
+                        "message": self.finbert_backfill_status,
+                    },
+                )
+                self._persist_state()
+                try:
+                    finbert_result = self._run_post_refresh_finbert_backfill()
+                except Exception as exc:
+                    finbert_result = {"ok": False, "skipped": True, "reason": f"error:{exc}"}
+                if finbert_result.get("ok") and not finbert_result.get("skipped"):
+                    reused_count = int(finbert_result.get("finbert_reused_count", 0) or 0)
+                    inferred_count = int(finbert_result.get("finbert_inference_count", 0) or 0)
+                    self.finbert_backfill_status = (
+                        f"FinBERT cached for {int(finbert_result.get('finbert_applied_count', 0) or 0)} "
+                        f"of {int(finbert_result.get('candidate_count', 0) or 0)} retained articles "
+                        f"(reused {reused_count}, inferred {inferred_count})."
+                    )
+                    _write_worker_heartbeat(
+                        "finbert_backfill",
+                        {
+                            "ts": _iso_now(),
+                            "pid": os.getpid(),
+                            "status": "ok",
+                            "in_progress": True,
+                            "message": self.finbert_backfill_status,
+                            "candidate_count": int(finbert_result.get("candidate_count", 0) or 0),
+                            "applied_count": int(finbert_result.get("finbert_applied_count", 0) or 0),
+                            "reused_count": reused_count,
+                            "inferred_count": inferred_count,
+                        },
+                    )
+                elif str(finbert_result.get("reason", "")).startswith("error:"):
+                    self.finbert_backfill_status = "FinBERT backfill skipped after a model-runtime error."
+                    _write_worker_heartbeat(
+                        "finbert_backfill",
+                        {
+                            "ts": _iso_now(),
+                            "pid": os.getpid(),
+                            "status": "error",
+                            "in_progress": True,
+                            "message": self.finbert_backfill_status,
+                            "reason": str(finbert_result.get("reason", "")),
+                        },
+                    )
+                else:
+                    reason = str(finbert_result.get("reason", "skipped") or "skipped")
+                    self.finbert_backfill_status = f"FinBERT backfill skipped: {reason}."
+                    _write_worker_heartbeat(
+                        "finbert_backfill",
+                        {
+                            "ts": _iso_now(),
+                            "pid": os.getpid(),
+                            "status": "skipped",
+                            "in_progress": True,
+                            "message": self.finbert_backfill_status,
+                            "reason": reason,
+                        },
+                    )
+                self._persist_state()
+            finally:
+                with self.lock:
+                    self.finbert_backfill_in_progress = False
+                heartbeat = _read_worker_heartbeat("finbert_backfill")
+                heartbeat["in_progress"] = False
+                heartbeat["ts"] = _iso_now()
+                _write_worker_heartbeat("finbert_backfill", heartbeat)
+                self._persist_state()
+
+        threading.Thread(target=_worker, name="finbert-backfill", daemon=True).start()
+        return True
+
     def cooldown_remaining(self) -> int:
         elapsed = time.time() - self.last_refresh_epoch
         remaining = self.cooldown_seconds - int(elapsed)
         return max(0, remaining)
 
     def state_payload(self) -> dict[str, Any]:
+        self._sync_runtime_state_from_disk()
         snapshot = self.snapshot or self._load_primary_snapshot() or {"tickers": []}
         tickers = [self._enrich_ticker_metadata(item) for item in snapshot.get("tickers", [])]
         article_pool = fetch_latest_market_article_pool(self.sqlite_db) if self.sqlite_db else {}
@@ -905,6 +1885,7 @@ class DashboardState:
                     ticker_copy["new_primary_count"] = 0
                 refreshed_tickers.append(ticker_copy)
             tickers = refreshed_tickers
+        tickers = self._ensure_watchlist_coverage(tickers)
         if article_pool.get("articles"):
             feed_rows = flatten_article_pool_rows(article_pool, self.watchlist_metadata)
         else:
@@ -912,6 +1893,11 @@ class DashboardState:
         source_health = []
         for row in snapshot.get("source_health", []):
             enriched = dict(row)
+            if (
+                str(enriched.get("source_group", "")).strip() == "structured_news"
+                and str(enriched.get("source_key", "")).strip() == "accessnewswire"
+            ):
+                continue
             visibility = source_visibility_counts.get(
                 (
                     str(enriched.get("source_key", "")).strip(),
@@ -931,15 +1917,36 @@ class DashboardState:
         ok_source_count = sum(1 for row in source_health if row.get("ok"))
         market_sentiment = summarize_article_sentiment(enriched_article_pool_articles or feed_rows)
         macro_government_climate = summarize_macro_government_climate(enriched_article_pool_articles or feed_rows)
-        finbert_ready_count = sum(1 for article in enriched_article_pool_articles if article.get("finbert_ready"))
+        momentum_snapshot = build_momentum_snapshot(feed_rows, self.watchlist_metadata)
+        category_snapshot = build_category_snapshot(feed_rows)
+        sentiment_audit_snapshot = build_sentiment_audit_snapshot(enriched_article_pool_articles or feed_rows)
+        momentum_lookup = {
+            str(item.get("ticker", "")): item
+            for item in momentum_snapshot.get("leaders", [])
+            if str(item.get("ticker", ""))
+        }
+        if momentum_lookup:
+            refreshed_tickers_with_momentum: list[dict[str, Any]] = []
+            for item in tickers:
+                ticker_copy = dict(item)
+                ticker_copy["momentum"] = momentum_lookup.get(str(ticker_copy.get("ticker", "")), {})
+                refreshed_tickers_with_momentum.append(ticker_copy)
+            tickers = refreshed_tickers_with_momentum
+        chart_snapshot = build_chart_snapshot(feed_rows, market_sentiment, momentum_snapshot)
+        sentiment_status = sentiment_runtime_status()
+        finbert_worker_health = _read_worker_heartbeat("finbert_backfill")
+        quote_service_health = _read_worker_heartbeat("quote_service")
+        visible_sentiment_rows = feed_rows
+        sentiment_count_rows = enriched_article_pool_articles or feed_rows
+        finbert_ready_count = sum(1 for article in visible_sentiment_rows if article.get("finbert_ready"))
         finbert_applied_count = sum(
             1
-            for article in enriched_article_pool_articles
+            for article in visible_sentiment_rows
             if str(article.get("sentiment_pipeline_stage", "")) == "hybrid_finbert_rule"
         )
         translation_pending_count = sum(
             1
-            for article in enriched_article_pool_articles
+            for article in visible_sentiment_rows
             if str(article.get("finbert_readiness_reason", "")) == "translation_pending"
         )
         display_status = self.last_status
@@ -962,9 +1969,11 @@ class DashboardState:
             "last_refresh_iso": self.last_refresh_iso,
             "last_refresh_display": format_eastern_time(self.last_refresh_iso),
             "last_status": display_status,
+            "finbert_backfill_status": self.finbert_backfill_status,
             "cooldown_seconds": self.cooldown_seconds,
             "cooldown_remaining": self.cooldown_remaining(),
             "update_in_progress": self.update_in_progress,
+            "finbert_backfill_in_progress": self.finbert_backfill_in_progress,
             "tickers": tickers,
             "feed_rows": feed_rows,
             "source_health": source_health,
@@ -972,14 +1981,27 @@ class DashboardState:
                 "total_rows": len(feed_rows),
                 "new_rows": new_rows,
                 "ticker_count": len(tickers),
+                "configured_watchlist_count": len(self.watchlist_metadata),
+                "snapshot_ticker_count": len(snapshot.get("tickers", []) or []),
                 "source_count": len(unique_sources),
                 "source_health_total": len(source_health),
                 "source_health_ok": ok_source_count,
                 "market_sentiment": market_sentiment,
                 "macro_government_climate": macro_government_climate,
+                "momentum": momentum_snapshot,
+                "charts": chart_snapshot,
+                "categories": category_snapshot,
+                "sentiment_audit": sentiment_audit_snapshot,
                 "finbert_ready_count": finbert_ready_count,
                 "finbert_applied_count": finbert_applied_count,
                 "translation_pending_count": translation_pending_count,
+                "sentiment_runtime": sentiment_status,
+                "finbert_backfill_status": self.finbert_backfill_status,
+                "finbert_backfill_in_progress": self.finbert_backfill_in_progress,
+                "worker_health": {
+                    "finbert_backfill": finbert_worker_health,
+                    "quote_service": quote_service_health,
+                },
             },
             "filters": {
                 "tickers": [str(item.get("ticker", "")) for item in tickers if str(item.get("ticker", ""))],
@@ -988,8 +2010,53 @@ class DashboardState:
                 "sources": unique_sources,
                 "event_types": unique_event_types,
                 "buckets": ["Primary", "Related", "Review"],
+                "categories": [str(item.get("key", "")) for item in category_snapshot if str(item.get("key", ""))],
             },
         }
+
+    def momentum_payload(self) -> dict[str, Any]:
+        def _build() -> dict[str, Any]:
+            payload = self.state_payload()
+            summary = payload.get("summary", {})
+            momentum_snapshot = dict(summary.get("momentum", {}) or {})
+            quote_snapshot = fetch_watchlist_quote_snapshot(list(self.watchlist_metadata.keys()))
+            return {
+                "generated_at": payload.get("generated_at", ""),
+                "market_session": payload.get("market_session", ""),
+                "momentum": momentum_snapshot,
+                "marketboard": build_momentum_marketboard(
+                    momentum_snapshot,
+                    self.watchlist_metadata,
+                    quote_snapshot=quote_snapshot,
+                ),
+            }
+
+        return self._cached_payload(
+            "momentum_payload",
+            ttl_seconds=300,
+            builder=_build,
+        )
+
+    def correlation_payload(self) -> dict[str, Any]:
+        def _build() -> dict[str, Any]:
+            payload = self.state_payload()
+            quote_snapshot = fetch_watchlist_quote_snapshot(list(self.watchlist_metadata.keys()))
+            correlation_snapshot = build_correlation_snapshot(
+                list(payload.get("feed_rows", []) or []),
+                self.watchlist_metadata,
+                quote_snapshot=quote_snapshot,
+            )
+            return {
+                "generated_at": payload.get("generated_at", ""),
+                "market_session": payload.get("market_session", ""),
+                "correlation": correlation_snapshot,
+            }
+
+        return self._cached_payload(
+            "correlation_payload",
+            ttl_seconds=300,
+            builder=_build,
+        )
 
     def trigger_update(self) -> tuple[bool, str]:
         with self.lock:
@@ -1007,6 +2074,8 @@ class DashboardState:
             updated = self._run_snapshot_update(mark_all_seen=False)
             self.snapshot = updated
             self.last_refresh_iso = _iso_now()
+            with self.analytics_lock:
+                self._analytics_cache.clear()
             if self.sqlite_db:
                 article_pool = fetch_latest_market_article_pool(self.sqlite_db)
                 new_primary_total = sum(
@@ -1014,12 +2083,17 @@ class DashboardState:
                     for article in article_pool.get("articles", []) or []
                     if article.get("is_new") and "stories" in set(article.get("buckets", []) or [])
                 )
+                finbert_started = self._launch_async_finbert_backfill()
             else:
+                finbert_started = False
                 new_primary_total = sum(int(item.get("new_primary_count", 0)) for item in updated.get("tickers", []))
             self.last_status = (
                 f"Watchlist refreshed successfully at {format_eastern_time(self.last_refresh_iso)}. "
                 f"New primary stories found: {new_primary_total}."
             )
+            if finbert_started:
+                self.finbert_backfill_status = "FinBERT backfill queued."
+                self.last_status += " FinBERT backfill started in the background."
             self._persist_state()
             return True, self.last_status
         except Exception as exc:

@@ -9,6 +9,10 @@ if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
 from flask import Flask, jsonify, Response, request
+try:
+    from flask_compress import Compress
+except Exception:  # pragma: no cover - optional runtime dependency
+    Compress = None
 
 from src.dashboard.dashboard_state import DashboardState, parse_args
 from src.dashboard.translation_utils import likely_non_english, translate_text_to_english
@@ -33,11 +37,18 @@ APP_HTML = """<!DOCTYPE html>
     :root {
       --bg: #f3f5ef;
       --panel: #fffdf8;
+      --panel-soft: rgba(255,255,255,0.9);
+      --panel-strong: rgba(255,255,255,0.86);
       --ink: #13233a;
       --muted: #5e6d7f;
       --line: #dbe4d2;
+      --line-soft: #edf1e7;
       --accent: #0f766e;
       --new: #166534;
+      --surface: #ffffff;
+      --surface-alt: #f8faf6;
+      --shadow: 0 12px 30px rgba(19, 35, 58, 0.06);
+      --nav-surface: rgba(255,255,255,0.88);
     }
     * { box-sizing: border-box; }
     body {
@@ -47,6 +58,26 @@ APP_HTML = """<!DOCTYPE html>
         radial-gradient(circle at top left, rgba(15,118,110,0.08), transparent 28%),
         linear-gradient(180deg, #f9faf7 0%, var(--bg) 100%);
       color: var(--ink);
+    }
+    body[data-theme="dark"] {
+      --bg: #09131f;
+      --panel: #101d2c;
+      --panel-soft: rgba(14, 24, 39, 0.92);
+      --panel-strong: rgba(18, 31, 49, 0.94);
+      --ink: #e7eef8;
+      --muted: #a8b8cb;
+      --line: #24384f;
+      --line-soft: #1c2d42;
+      --surface: #132233;
+      --surface-alt: #0d1827;
+      --shadow: 0 18px 36px rgba(1, 6, 16, 0.38);
+      --nav-surface: rgba(12, 20, 33, 0.9);
+      --accent: #36b7b0;
+      --new: #5dd38d;
+      background:
+        radial-gradient(circle at top left, rgba(54,183,176,0.16), transparent 30%),
+        linear-gradient(180deg, #0b1420 0%, var(--bg) 100%);
+      color-scheme: dark;
     }
     .wrap {
       max-width: 1380px;
@@ -69,7 +100,7 @@ APP_HTML = """<!DOCTYPE html>
       align-items: center;
       border-radius: 999px;
       padding: 10px 14px;
-      background: rgba(255,255,255,0.88);
+      background: var(--nav-surface);
       border: 1px solid var(--line);
       box-shadow: 0 8px 18px rgba(19, 35, 58, 0.06);
       color: var(--ink);
@@ -85,12 +116,62 @@ APP_HTML = """<!DOCTYPE html>
       border-color: rgba(15,118,110,0.4);
       color: #0c5c58;
     }
+    .site-link.active {
+      background: linear-gradient(135deg, rgba(15,118,110,0.18), rgba(23,61,109,0.14));
+      border-color: rgba(15,118,110,0.35);
+      color: #0c5c58;
+    }
     .hero, .summary-card, .panel {
-      background: rgba(255,255,255,0.9);
+      background: var(--panel-soft);
       border: 1px solid var(--line);
       border-radius: 22px;
       padding: 18px;
-      box-shadow: 0 12px 30px rgba(19, 35, 58, 0.06);
+      box-shadow: var(--shadow);
+    }
+    .hero {
+      border-top: 4px solid #173d6d;
+    }
+    .panel-feed {
+      border-top: 4px solid #0f766e;
+      background: linear-gradient(180deg, rgba(240, 253, 250, 0.55), rgba(255,255,255,0.92) 28%);
+    }
+    .panel-momentum {
+      border-top: 4px solid #1d4ed8;
+      background: linear-gradient(180deg, rgba(239, 246, 255, 0.6), rgba(255,255,255,0.92) 30%);
+    }
+    .panel-charts {
+      border-top: 4px solid #b45309;
+      background: linear-gradient(180deg, rgba(255, 247, 237, 0.62), rgba(255,255,255,0.92) 30%);
+    }
+    .panel-workspace {
+      border-top: 4px solid #7c3aed;
+      background: linear-gradient(180deg, rgba(245, 243, 255, 0.58), rgba(255,255,255,0.92) 30%);
+    }
+    .panel-universe {
+      border-top: 4px solid #0f766e;
+      background: linear-gradient(180deg, rgba(240, 253, 244, 0.58), rgba(255,255,255,0.92) 30%);
+    }
+    .panel-monitoring {
+      border-top: 4px solid #475569;
+      background: linear-gradient(180deg, rgba(248, 250, 252, 0.66), rgba(255,255,255,0.92) 30%);
+    }
+    body[data-theme="dark"] .panel-feed {
+      background: linear-gradient(180deg, rgba(17, 57, 64, 0.44), rgba(14, 24, 39, 0.96) 30%);
+    }
+    body[data-theme="dark"] .panel-momentum {
+      background: linear-gradient(180deg, rgba(22, 47, 90, 0.44), rgba(14, 24, 39, 0.96) 30%);
+    }
+    body[data-theme="dark"] .panel-charts {
+      background: linear-gradient(180deg, rgba(89, 51, 17, 0.4), rgba(14, 24, 39, 0.96) 30%);
+    }
+    body[data-theme="dark"] .panel-workspace {
+      background: linear-gradient(180deg, rgba(54, 35, 92, 0.38), rgba(14, 24, 39, 0.96) 30%);
+    }
+    body[data-theme="dark"] .panel-universe {
+      background: linear-gradient(180deg, rgba(15, 72, 55, 0.36), rgba(14, 24, 39, 0.96) 30%);
+    }
+    body[data-theme="dark"] .panel-monitoring {
+      background: linear-gradient(180deg, rgba(48, 65, 89, 0.38), rgba(14, 24, 39, 0.96) 30%);
     }
     h1 {
       margin: 0 0 8px;
@@ -121,6 +202,36 @@ APP_HTML = """<!DOCTYPE html>
       align-items: center;
       flex-wrap: wrap;
     }
+    .toolbar-controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .toolbar-select {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 12px 14px;
+      background: var(--surface);
+      color: var(--ink);
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .toggle-button.active {
+      background: linear-gradient(135deg, #1d4ed8, #2563eb);
+      color: white;
+      border-color: rgba(37, 99, 235, 0.4);
+    }
+    .toggle-button.inactive {
+      background: var(--surface);
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .toolbar-note {
+      color: var(--muted);
+      font-size: 13px;
+      font-family: Arial, Helvetica, sans-serif;
+    }
     button {
       border: none;
       border-radius: 999px;
@@ -132,9 +243,13 @@ APP_HTML = """<!DOCTYPE html>
       cursor: pointer;
     }
     button.secondary {
-      background: white;
+      background: var(--surface);
       color: var(--ink);
       border: 1px solid var(--line);
+    }
+    .toolbar-utility.active {
+      border-color: rgba(37, 99, 235, 0.34);
+      color: var(--accent);
     }
     button:disabled {
       cursor: not-allowed;
@@ -170,7 +285,7 @@ APP_HTML = """<!DOCTYPE html>
     .summary-grid {
       margin-top: 24px;
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
       gap: 14px;
     }
     .summary-card .label {
@@ -200,10 +315,91 @@ APP_HTML = """<!DOCTYPE html>
       gap: 14px;
     }
     .detail-card {
-      background: rgba(255,255,255,0.82);
+      background: var(--panel-strong);
       border: 1px solid var(--line);
       border-radius: 18px;
       padding: 14px 16px;
+    }
+    .settings-panel {
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--panel-strong);
+      padding: 16px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+    .settings-panel-head {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .settings-panel-head h3 {
+      margin: 0 0 4px;
+      font-size: 20px;
+      letter-spacing: -0.02em;
+    }
+    .settings-hint {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+    .settings-grid {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .settings-field label {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .settings-field select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: var(--surface);
+      color: var(--ink);
+      font-size: 14px;
+    }
+    .settings-toggle {
+      display: flex;
+      align-items: start;
+      gap: 10px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+      padding: 12px 14px;
+      font-family: Arial, Helvetica, sans-serif;
+      cursor: pointer;
+    }
+    .settings-toggle input {
+      margin-top: 2px;
+    }
+    .settings-toggle span {
+      display: grid;
+      gap: 4px;
+    }
+    .settings-toggle strong {
+      color: var(--ink);
+      font-size: 14px;
+    }
+    .settings-toggle small {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .settings-reset {
+      padding: 10px 14px;
+      font-size: 13px;
     }
     .detail-card .detail-label {
       color: var(--muted);
@@ -225,6 +421,58 @@ APP_HTML = """<!DOCTYPE html>
       line-height: 1.4;
       font-family: Arial, Helvetica, sans-serif;
     }
+    .system-status-panel {
+      margin-top: 18px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--panel-strong);
+      padding: 14px 16px;
+    }
+    .system-status-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: end;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .system-status-head h3 {
+      margin: 0 0 4px;
+      font-size: 19px;
+      letter-spacing: -0.02em;
+    }
+    .system-status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+    }
+    .system-status-item {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+      padding: 12px 13px;
+    }
+    .system-status-label {
+      color: var(--muted);
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .system-status-value {
+      margin-top: 6px;
+      color: var(--ink);
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .system-status-note {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      font-family: Arial, Helvetica, sans-serif;
+    }
     .panel-head {
       display: flex;
       justify-content: space-between;
@@ -235,7 +483,7 @@ APP_HTML = """<!DOCTYPE html>
     }
     .filter-grid {
       display: grid;
-      grid-template-columns: 1.2fr repeat(5, minmax(0, 1fr));
+      grid-template-columns: 1.2fr repeat(6, minmax(0, 1fr));
       gap: 12px;
       align-items: end;
     }
@@ -254,7 +502,7 @@ APP_HTML = """<!DOCTYPE html>
       border: 1px solid var(--line);
       border-radius: 12px;
       padding: 10px 12px;
-      background: white;
+      background: var(--surface);
       color: var(--ink);
       font-size: 14px;
     }
@@ -264,48 +512,98 @@ APP_HTML = """<!DOCTYPE html>
     .filter-actions {
       display: flex;
       justify-content: flex-end;
+      order: 1;
+    }
+    .table-note {
+      order: 2;
+    }
+    .feed-layout {
+      display: grid;
+      grid-template-columns: 190px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+    .feed-layout.feed-layout-wide {
+      grid-template-columns: 1fr;
+    }
+    .feed-main {
+      min-width: 0;
+    }
+    .source-rail {
+      position: sticky;
+      top: 16px;
+    }
+    .source-legend-list {
+      margin-top: 12px;
+      display: grid;
+      gap: 8px;
+    }
+    .source-legend-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .source-legend-count {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+    .source-badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 8px;
+      background: var(--source-soft, rgba(23,61,109,0.12));
+      color: var(--source-accent, #173d6d);
+      border: 1px solid var(--source-border, #173d6d);
+      font-size: 10px;
+      font-weight: 700;
+      font-family: Arial, Helvetica, sans-serif;
+      line-height: 1.2;
     }
     .table-wrap {
       overflow-x: auto;
       border-radius: 16px;
-      border: 1px solid #e5ebdf;
-      background: white;
+      border: 1px solid var(--line);
+      background: var(--surface);
       margin-top: 16px;
     }
     table {
       width: 100%;
       border-collapse: collapse;
-      min-width: 1120px;
+      min-width: 920px;
     }
     th, td {
-      padding: 12px 10px;
+      padding: 9px 7px;
       text-align: left;
       vertical-align: top;
-      border-bottom: 1px solid #edf1e7;
-      font-size: 14px;
+      border-bottom: 1px solid var(--line-soft);
+      font-size: 12px;
     }
     th {
       position: sticky;
       top: 0;
-      background: #f8faf6;
+      background: var(--surface-alt);
       color: #2d4257;
       font-family: Arial, Helvetica, sans-serif;
-      font-size: 12px;
+      font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.06em;
       z-index: 1;
     }
-    .col-ticker { min-width: 120px; }
-    .col-headline { min-width: 360px; }
+    .col-ticker { min-width: 88px; }
+    .col-headline { min-width: 260px; }
     .ticker-chip {
       display: inline-flex;
       align-items: center;
       border-radius: 999px;
-      padding: 5px 10px;
+      padding: 4px 9px;
       background: rgba(15,118,110,0.09);
       color: #0c5c58;
       font-family: Arial, Helvetica, sans-serif;
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 700;
       letter-spacing: 0.05em;
       text-transform: uppercase;
@@ -322,7 +620,7 @@ APP_HTML = """<!DOCTYPE html>
     .company-name {
       margin-top: 8px;
       color: var(--muted);
-      font-size: 13px;
+      font-size: 12px;
     }
     .headline-line {
       display: flex;
@@ -340,16 +638,16 @@ APP_HTML = """<!DOCTYPE html>
     .headline-sub {
       margin-top: 6px;
       color: var(--muted);
-      font-size: 13px;
+      font-size: 12px;
       line-height: 1.35;
     }
     .headline-meta {
       margin-top: 8px;
       display: flex;
-      gap: 8px 14px;
+      gap: 6px 10px;
       flex-wrap: wrap;
       color: var(--muted);
-      font-size: 12px;
+      font-size: 11px;
       font-family: Arial, Helvetica, sans-serif;
     }
     .badge {
@@ -421,6 +719,36 @@ APP_HTML = """<!DOCTYPE html>
       align-items: center;
       flex-wrap: wrap;
     }
+    .preset-row, .active-filter-row {
+      margin-top: 12px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .active-filter-row {
+      margin-top: 10px;
+    }
+    .preset-label,
+    .active-filter-label {
+      color: var(--muted);
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .active-filter-pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 7px 11px;
+      background: rgba(15,118,110,0.09);
+      border: 1px solid rgba(15,118,110,0.14);
+      color: #0c5c58;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: Arial, Helvetica, sans-serif;
+    }
     .quick-filter-label {
       color: var(--muted);
       font-family: Arial, Helvetica, sans-serif;
@@ -432,7 +760,7 @@ APP_HTML = """<!DOCTYPE html>
       border: 1px solid var(--line);
       border-radius: 999px;
       padding: 8px 12px;
-      background: white;
+      background: var(--surface);
       color: var(--ink);
       font-size: 12px;
       font-weight: 700;
@@ -446,6 +774,231 @@ APP_HTML = """<!DOCTYPE html>
       border-color: rgba(245, 158, 11, 0.45);
       color: #9a5b00;
     }
+    .momentum-grid, .chart-grid {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .momentum-card, .chart-card {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 14px 16px;
+      background: var(--panel-strong);
+    }
+    .momentum-card h3, .chart-card h3 {
+      margin: 0 0 6px;
+      font-size: 18px;
+      letter-spacing: -0.02em;
+    }
+    .leader-list, .bar-list {
+      margin-top: 12px;
+      display: grid;
+      gap: 10px;
+    }
+    .leader-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      border: 1px solid var(--line-soft);
+      border-radius: 14px;
+      padding: 10px 12px;
+      background: var(--surface);
+    }
+    .leader-main {
+      min-width: 0;
+    }
+    .leader-title {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .leader-company {
+      color: var(--muted);
+      font-size: 12px;
+      font-family: Arial, Helvetica, sans-serif;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .leader-meta {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-family: Arial, Helvetica, sans-serif;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .leader-score {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      text-align: right;
+    }
+    .leader-score.positive {
+      color: #047857;
+    }
+    .leader-score.negative {
+      color: #b91c1c;
+    }
+    .leader-score.mixed {
+      color: #9a5b00;
+    }
+    body[data-theme="dark"] .site-link:hover,
+    body[data-theme="dark"] .headline-line a,
+    body[data-theme="dark"] .translate-button {
+      color: #8cc8ff;
+    }
+    body[data-theme="dark"] .status {
+      color: #b9cadc;
+    }
+    body[data-theme="dark"] .market-pill {
+      background: rgba(54,183,176,0.14);
+      color: #9ce5df;
+      border-color: rgba(54,183,176,0.28);
+    }
+    body[data-theme="dark"] th,
+    body[data-theme="dark"] .bar-label,
+    body[data-theme="dark"] .bar-value,
+    body[data-theme="dark"] .category-name {
+      color: #c7d6e6;
+    }
+    body[data-theme="dark"] .bar-track {
+      background: #1e3349;
+    }
+    body[data-theme="dark"] .category-row,
+    body[data-theme="dark"] .sidebar-card {
+      background: linear-gradient(180deg, rgba(17, 30, 46, 0.96), rgba(13, 24, 37, 0.94));
+      border-color: var(--line);
+      box-shadow: var(--shadow);
+    }
+    body[data-density="compact"] .site-link,
+    body[data-density="compact"] button,
+    body[data-density="compact"] .toolbar-select,
+    body[data-density="compact"] .quick-filter-chip {
+      padding-top: 9px;
+      padding-bottom: 9px;
+    }
+    body[data-density="compact"] .hero,
+    body[data-density="compact"] .summary-card,
+    body[data-density="compact"] .panel,
+    body[data-density="compact"] .detail-card,
+    body[data-density="compact"] .momentum-card,
+    body[data-density="compact"] .chart-card,
+    body[data-density="compact"] .leader-row,
+    body[data-density="compact"] .settings-panel,
+    body[data-density="compact"] .sidebar-card {
+      padding: 13px 14px;
+    }
+    body[data-density="compact"] .filter-grid,
+    body[data-density="compact"] .detail-grid,
+    body[data-density="compact"] .summary-grid,
+    body[data-density="compact"] .momentum-grid,
+    body[data-density="compact"] .chart-grid {
+      gap: 10px;
+    }
+    body[data-density="compact"] .headline-meta,
+    body[data-density="compact"] .headline-sub,
+    body[data-density="compact"] .company-name,
+    body[data-density="compact"] .panel-subtitle,
+    body[data-density="compact"] .subtitle,
+    body[data-density="compact"] .table-note {
+      font-size: 12px;
+    }
+    body[data-density="compact"] th,
+    body[data-density="compact"] td {
+      padding: 7px 6px;
+      font-size: 11px;
+    }
+    body[data-density="compact"] .source-badge,
+    body[data-density="compact"] .badge,
+    body[data-density="compact"] .ticker-chip {
+      font-size: 10px;
+    }
+    .bar-row {
+      display: grid;
+      grid-template-columns: 80px minmax(0, 1fr) 64px;
+      gap: 10px;
+      align-items: center;
+    }
+    .bar-label, .bar-value {
+      color: #2d4257;
+      font-size: 12px;
+      font-family: Arial, Helvetica, sans-serif;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .bar-value {
+      text-align: right;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    .bar-track {
+      position: relative;
+      height: 10px;
+      border-radius: 999px;
+      background: #e9efea;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 999px;
+    }
+    .bar-fill.bullish, .bar-fill.positive, .bar-fill.accent {
+      background: linear-gradient(135deg, #10b981, #0f766e);
+    }
+    .bar-fill.bearish, .bar-fill.negative {
+      background: linear-gradient(135deg, #ef4444, #b91c1c);
+    }
+    .bar-fill.mixed {
+      background: linear-gradient(135deg, #f59e0b, #d97706);
+    }
+    .bar-fill.neutral {
+      background: linear-gradient(135deg, #94a3b8, #64748b);
+    }
+    .chart-footnote {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+    .category-list {
+      margin-top: 12px;
+      display: grid;
+      gap: 8px;
+      max-height: 220px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+    .category-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border: 1px solid #e8eee2;
+      border-radius: 14px;
+      padding: 10px 12px;
+      background: white;
+    }
+    .category-name,
+    .category-count {
+      font-family: Arial, Helvetica, sans-serif;
+      color: #2d4257;
+    }
+    .category-name {
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .category-count {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--muted);
+    }
     .sidebar-card {
       background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(247,250,245,0.94));
       border: 1px solid var(--line);
@@ -455,7 +1008,7 @@ APP_HTML = """<!DOCTYPE html>
     }
     .sidebar-card h3 {
       margin: 0 0 8px;
-      font-size: 28px;
+      font-size: 16px;
       line-height: 1;
       letter-spacing: -0.03em;
     }
@@ -547,19 +1100,30 @@ APP_HTML = """<!DOCTYPE html>
       font-size: 14px;
       margin: 8px 0 0;
     }
+    @media (max-width: 1500px) {
+      .feed-layout { grid-template-columns: 1fr; }
+      .source-rail { position: static; }
+    }
     @media (max-width: 900px) {
       .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .detail-grid { grid-template-columns: 1fr; }
       .filter-grid { grid-template-columns: 1fr; }
       .mini-grid { grid-template-columns: 1fr; }
+      .settings-grid { grid-template-columns: 1fr; }
+      .momentum-grid, .chart-grid, .feed-layout { grid-template-columns: 1fr; }
+      .source-rail { position: static; }
+      .bar-row { grid-template-columns: 72px minmax(0, 1fr) 56px; }
     }
   </style>
 </head>
 <body>
   <div class="site-nav">
     <div class="site-nav-inner">
-      <a class="site-link" href="/">Live Dashboard</a>
+      <a class="site-link active" href="/">Live Dashboard</a>
       <a class="site-link" href="/lookup">Single Ticker Tracker</a>
+      <a class="site-link" href="/correlation">Correlation</a>
+      <a class="site-link" href="/momentum">Momentum</a>
+      <a class="site-link" href="/charts">Charts</a>
       <a class="site-link" href="/future-modules">Future Modules</a>
     </div>
   </div>
@@ -650,8 +1214,15 @@ def _is_supported_equity_lookup_ticker(ticker: str) -> bool:
 def create_app(app_state: DashboardState) -> Flask:
     static_dir = Path(__file__).with_name("static")
     lookup_html_path = static_dir / "lookup.html"
+    charts_html_path = static_dir / "charts.html"
+    correlation_html_path = static_dir / "correlation.html"
+    momentum_html_path = static_dir / "momentum.html"
     future_modules_html_path = static_dir / "future_modules.html"
     app = Flask(__name__, static_folder=str(static_dir), static_url_path="/static")
+    app.config.setdefault("COMPRESS_MIMETYPES", ["application/json", "text/html", "text/css", "application/javascript"])
+    app.config.setdefault("COMPRESS_LEVEL", 6)
+    if Compress is not None:
+        Compress(app)
 
     @app.get("/")
     def index() -> Response:
@@ -660,6 +1231,18 @@ def create_app(app_state: DashboardState) -> Flask:
     @app.get("/lookup")
     def lookup_page() -> Response:
         return Response(lookup_html_path.read_text(encoding="utf-8"), mimetype="text/html")
+
+    @app.get("/charts")
+    def charts_page() -> Response:
+        return Response(charts_html_path.read_text(encoding="utf-8"), mimetype="text/html")
+
+    @app.get("/correlation")
+    def correlation_page() -> Response:
+        return Response(correlation_html_path.read_text(encoding="utf-8"), mimetype="text/html")
+
+    @app.get("/momentum")
+    def momentum_page() -> Response:
+        return Response(momentum_html_path.read_text(encoding="utf-8"), mimetype="text/html")
 
     @app.get("/future-modules")
     def future_modules_page() -> Response:
@@ -695,6 +1278,28 @@ def create_app(app_state: DashboardState) -> Flask:
     def api_articles():
         payload = app_state.market_article_pool()
         return jsonify({"ok": True, **payload})
+
+    @app.get("/api/correlation")
+    def api_correlation():
+        payload = app_state.correlation_payload()
+        return jsonify({"ok": True, **payload})
+
+    @app.get("/api/momentum")
+    def api_momentum():
+        payload = app_state.momentum_payload()
+        return jsonify({"ok": True, **payload})
+
+    @app.get("/api/sentiment-audit")
+    def api_sentiment_audit():
+        payload = app_state.state_payload()
+        return jsonify(
+            {
+                "ok": True,
+                "generated_at": payload.get("generated_at", ""),
+                "sentiment_runtime": payload.get("summary", {}).get("sentiment_runtime", {}),
+                "sentiment_audit": payload.get("summary", {}).get("sentiment_audit", {}),
+            }
+        )
 
     @app.post("/api/lookup-ticker")
     def api_lookup_ticker():

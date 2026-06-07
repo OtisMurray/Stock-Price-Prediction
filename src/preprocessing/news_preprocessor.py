@@ -37,6 +37,51 @@ COMPANY_SUFFIXES = {
     "plc",
 }
 
+COMPANY_GENERIC_TOKENS = {
+    "america",
+    "american",
+    "bank",
+    "banks",
+    "brands",
+    "capital",
+    "communications",
+    "computer",
+    "data",
+    "devices",
+    "energy",
+    "exchange",
+    "financial",
+    "global",
+    "group",
+    "health",
+    "healthcare",
+    "industrial",
+    "industries",
+    "insurance",
+    "international",
+    "markets",
+    "medical",
+    "motors",
+    "network",
+    "networks",
+    "payments",
+    "pharmaceutical",
+    "pharmaceuticals",
+    "resources",
+    "retail",
+    "scientific",
+    "service",
+    "services",
+    "software",
+    "systems",
+    "technology",
+    "technologies",
+    "therapeutic",
+    "therapeutics",
+    "united",
+    "wholesale",
+}
+
 TITLE_SIGNATURE_STOPWORDS = {
     "a",
     "an",
@@ -92,6 +137,20 @@ RELATED_CONTEXT_PATTERNS = (
     re.compile(r"\brecord highs\b", re.IGNORECASE),
     re.compile(r"\bdow jones hits\b", re.IGNORECASE),
     re.compile(r"\bpower market indexes higher\b", re.IGNORECASE),
+)
+
+LOW_SIGNAL_GENERIC_PATTERNS = (
+    re.compile(r"\bis a trending stock\b", re.IGNORECASE),
+    re.compile(r"\bfacts to know before betting on it\b", re.IGNORECASE),
+    re.compile(r"\bhere is what you need to know\b", re.IGNORECASE),
+    re.compile(r"\bwhat you need to know\b", re.IGNORECASE),
+    re.compile(r"\bshould you buy (the )?stock now\b", re.IGNORECASE),
+    re.compile(r"\bworth at least\b", re.IGNORECASE),
+    re.compile(r"\bamong the \d+ best\b", re.IGNORECASE),
+    re.compile(r"\boutpacing .* peers\b", re.IGNORECASE),
+    re.compile(r"\bbefore betting on it\b", re.IGNORECASE),
+    re.compile(r"\baccording to hedge funds\b", re.IGNORECASE),
+    re.compile(r"\bbest low risk stocks to buy\b", re.IGNORECASE),
 )
 
 SOURCE_PRIORITY = {
@@ -234,7 +293,9 @@ def _tokenize_company(company_name: str) -> list[str]:
     return [
         token
         for token in tokens
-        if len(token) >= 3 and token not in COMPANY_SUFFIXES
+        if len(token) >= 3
+        and token not in COMPANY_SUFFIXES
+        and token not in COMPANY_GENERIC_TOKENS
     ]
 
 
@@ -314,6 +375,11 @@ def _is_related_context_title(title: str) -> bool:
     return any(pattern.search(title or "") for pattern in RELATED_CONTEXT_PATTERNS)
 
 
+def _is_low_signal_generic_finance_content(title: str, summary: str) -> bool:
+    combined = " ".join(part for part in (title or "", summary or "") if part)
+    return any(pattern.search(combined) for pattern in LOW_SIGNAL_GENERIC_PATTERNS)
+
+
 def _classify_event(title: str, summary: str) -> tuple[str, float]:
     for event_type, patterns, weight in EVENT_TYPE_PATTERNS:
         if any(pattern.search(title or "") for pattern in patterns):
@@ -329,6 +395,8 @@ def _classify_event(title: str, summary: str) -> tuple[str, float]:
 def score_row_relevance(row: dict[str, Any], profile: TickerProfile) -> dict[str, Any]:
     title = str(row.get("title", ""))
     summary = str(row.get("summary", ""))
+    source_scope_ticker = str(row.get("source_scope_ticker", "")).upper()
+    scope_matches_profile = bool(source_scope_ticker and source_scope_ticker == profile.ticker)
 
     matched_identity_title = _matched_terms(title, profile.identity_terms)
     matched_identity_summary = _matched_terms(summary, profile.identity_terms)
@@ -348,6 +416,10 @@ def score_row_relevance(row: dict[str, Any], profile: TickerProfile) -> dict[str
     score += len(matched_specific_summary) * 2.0
     score += len(matched_generic_title) * 1.0
     score += len(matched_generic_summary) * 0.5
+    if scope_matches_profile:
+        # Treat ticker-scoped collection as a useful prior, not proof. Some
+        # sources surface the same story on multiple ticker pages.
+        score += 2.5
 
     if row.get("source_key") == "tradingview":
         score += 2.0
@@ -358,21 +430,33 @@ def score_row_relevance(row: dict[str, Any], profile: TickerProfile) -> dict[str
     if row.get("source_key") == "finviz":
         score -= 1.0
 
+    event_type, event_importance_weight = _classify_event(title, summary)
+
     reasons: list[str] = []
     is_roundup = _is_roundup_noise(title)
     if is_roundup:
         score -= 6.0
         reasons.append("broad_roundup_pattern")
 
+    is_low_signal_generic = _is_low_signal_generic_finance_content(title, summary)
+    if is_low_signal_generic:
+        score -= 5.0
+        reasons.append("low_signal_generic_finance_content")
+
     has_identity = bool(identity_hits)
     has_specific_context = bool(specific_hits)
-    has_strong_title_signal = bool(matched_identity_title or matched_specific_title)
+    has_any_company_signal = has_identity or has_specific_context
+    has_strong_title_signal = bool(
+        matched_identity_title
+        or matched_specific_title
+        or (scope_matches_profile and has_any_company_signal)
+    )
 
     accepted = True
     if score < 7.0:
         accepted = False
         reasons.append("low_relevance_score")
-    if not has_identity and not has_specific_context:
+    if not has_any_company_signal:
         accepted = False
         reasons.append("no_company_specific_signal")
     if not has_strong_title_signal:
@@ -385,8 +469,13 @@ def score_row_relevance(row: dict[str, Any], profile: TickerProfile) -> dict[str
         if not has_strong_title_signal and len(identity_hits) < 2:
             accepted = False
             reasons.append("weak_aggregator_match")
-
-    event_type, event_importance_weight = _classify_event(title, summary)
+    if (
+        is_low_signal_generic
+        and event_type == "general_company_focus"
+        and row.get("source_key") in {"stocktwits", "tradingview", "finviz"}
+    ):
+        accepted = False
+        reasons.append("generic_finance_content")
 
     return {
         **row,

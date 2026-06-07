@@ -10,6 +10,8 @@ KNOWN_SOURCE_KEYS = [
     "marketwatch_topstories",
     "marketwatch_marketpulse",
     "sec_press_releases",
+    "benzinga_news",
+    "reuters_business",
     "prnewswire_all_news",
 ]
 

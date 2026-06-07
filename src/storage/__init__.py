@@ -10,6 +10,7 @@ from .sqlite_store import (
     initialize_database,
     persist_watchlist_snapshot,
     prune_pipeline_history,
+    refresh_story_sentiment_snapshots,
     save_story_translation,
 )
 
@@ -25,5 +26,6 @@ __all__ = [
     "initialize_database",
     "persist_watchlist_snapshot",
     "prune_pipeline_history",
+    "refresh_story_sentiment_snapshots",
     "save_story_translation",
 ]

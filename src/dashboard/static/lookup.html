@@ -49,6 +49,11 @@
       letter-spacing: 0.04em;
       text-transform: uppercase;
     }
+    .site-link.active {
+      background: linear-gradient(135deg, rgba(15,118,110,0.18), rgba(23,61,109,0.14));
+      border-color: rgba(15,118,110,0.35);
+      color: #0c5c58;
+    }
     .wrap {
       max-width: 1180px;
       margin: 0 auto;
@@ -280,7 +285,10 @@
   <div class="site-nav">
     <div class="site-nav-inner">
       <a class="site-link" href="/">Live Dashboard</a>
-      <a class="site-link" href="/lookup">Single Ticker Tracker</a>
+      <a class="site-link active" href="/lookup">Single Ticker Tracker</a>
+      <a class="site-link" href="/correlation">Correlation</a>
+      <a class="site-link" href="/momentum">Momentum</a>
+      <a class="site-link" href="/charts">Charts</a>
       <a class="site-link" href="/future-modules">Future Modules</a>
     </div>
   </div>

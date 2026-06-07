@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Momentum</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #172033;
+      --panel-soft: #1e293b;
+      --line: rgba(148, 163, 184, 0.18);
+      --text: #e5edf6;
+      --muted: #97a6ba;
+      --accent: #38bdf8;
+      --bull: #48bb78;
+      --bear: #f87171;
+      --amber: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(56, 189, 248, 0.12), transparent 28%),
+        linear-gradient(180deg, #111827 0%, var(--bg) 100%);
+      color: var(--text);
+    }
+    .site-nav {
+      padding: 16px 20px 0;
+    }
+    .site-nav-inner {
+      max-width: 1280px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .site-link {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 10px 14px;
+      background: rgba(30, 41, 59, 0.85);
+      border: 1px solid var(--line);
+      color: var(--text);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .site-link.active {
+      border-color: rgba(56, 189, 248, 0.45);
+      color: #dff5ff;
+    }
+    .wrap {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 28px 20px 40px;
+    }
+    .hero, .summary-card, .board, .panel {
+      background: rgba(17, 24, 39, 0.88);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: 0 18px 40px rgba(2, 6, 23, 0.28);
+    }
+    .hero {
+      padding: 22px;
+      border-top: 4px solid var(--accent);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 40px;
+      letter-spacing: -0.03em;
+    }
+    h2 {
+      margin: 0 0 10px;
+      font-size: 24px;
+      letter-spacing: -0.03em;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .summary-grid {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+    }
+    .summary-card {
+      padding: 16px 18px;
+      background: rgba(23, 32, 51, 0.92);
+    }
+    .summary-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .summary-value {
+      margin-top: 8px;
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+    }
+    .board, .panel {
+      margin-top: 18px;
+      padding: 18px;
+    }
+    .board-head, .panel-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-end;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .eyebrow {
+      display: inline-block;
+      margin-bottom: 8px;
+      border-radius: 999px;
+      padding: 4px 10px;
+      background: rgba(56, 189, 248, 0.12);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      color: #d8f3ff;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .subtle {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .board-list {
+      display: grid;
+      gap: 12px;
+    }
+    .ticker-row {
+      display: grid;
+      grid-template-columns: 70px 1.4fr repeat(5, minmax(0, 1fr));
+      gap: 12px;
+      align-items: center;
+      padding: 16px 18px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(51, 65, 85, 0.94), rgba(30, 41, 59, 0.94));
+      border: 1px solid rgba(148, 163, 184, 0.14);
+    }
+    .rank-pill {
+      width: 40px;
+      height: 40px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(56, 189, 248, 0.16);
+      color: var(--accent);
+      font-weight: 800;
+    }
+    .ticker-main {
+      min-width: 0;
+    }
+    .ticker-symbol {
+      font-size: 24px;
+      font-weight: 800;
+      color: #dff5ff;
+      letter-spacing: -0.03em;
+    }
+    .ticker-company {
+      margin-top: 4px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .metric-label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .metric-value {
+      margin-top: 6px;
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+    }
+    .metric-value.small {
+      font-size: 22px;
+    }
+    .bull { color: var(--bull); }
+    .bear { color: var(--bear); }
+    .neutral { color: #cbd5e1; }
+    .row-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .mini-panel {
+      border-radius: 18px;
+      background: rgba(23, 32, 51, 0.92);
+      border: 1px solid var(--line);
+      padding: 16px;
+    }
+    .window-bars {
+      display: grid;
+      gap: 10px;
+    }
+    .bar-row {
+      display: grid;
+      grid-template-columns: 56px minmax(0, 1fr) 72px;
+      gap: 10px;
+      align-items: center;
+    }
+    .bar-track {
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.18);
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(56, 189, 248, 0.7), rgba(56, 189, 248, 1));
+    }
+    .empty {
+      color: var(--muted);
+      padding: 18px 0 4px;
+    }
+    .loading {
+      color: var(--muted);
+      padding: 14px 0;
+    }
+    @media (max-width: 1080px) {
+      .summary-grid, .row-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+      .ticker-row {
+        grid-template-columns: 56px 1fr 1fr 1fr;
+      }
+    }
+    @media (max-width: 720px) {
+      .summary-grid, .row-grid {
+        grid-template-columns: 1fr;
+      }
+      .ticker-row {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="site-nav">
+    <div class="site-nav-inner">
+      <a class="site-link" href="/">Live Dashboard</a>
+      <a class="site-link" href="/lookup">Single Ticker Tracker</a>
+      <a class="site-link" href="/correlation">Correlation</a>
+      <a class="site-link active" href="/momentum">Momentum</a>
+      <a class="site-link" href="/charts">Charts</a>
+      <a class="site-link" href="/future-modules">Future Modules</a>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <section class="hero">
+      <div class="eyebrow">Sentiment-led leaderboard</div>
+      <h1>Momentum</h1>
+      <p>
+        This board ranks stocks by how quickly sentiment is building over rolling windows. Message density
+        stays visible, but tone remains the primary driver so this stays aligned with the project’s sentiment-first focus.
+      </p>
+    </section>
+
+    <div class="summary-grid" id="summaryGrid"></div>
+
+    <section class="board">
+      <div class="board-head">
+        <div>
+          <div class="eyebrow">Live ranking</div>
+          <h2>Top Momentum Stocks</h2>
+          <p class="subtle">Presented as a compact market board so the strongest sentiment build is easy to scan.</p>
+        </div>
+      </div>
+      <div id="leaderboard" class="board-list">
+        <div class="loading">Loading momentum leaders...</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="eyebrow">Rolling windows</div>
+          <h2>Window Totals</h2>
+          <p class="subtle">Short windows are weighted hardest, while density windows show how fast article traffic is building.</p>
+        </div>
+      </div>
+      <div class="row-grid">
+        <div class="mini-panel">
+          <h3>Sentiment Windows</h3>
+          <div class="window-bars" id="sentimentWindows"></div>
+        </div>
+        <div class="mini-panel">
+          <h3>Message Density</h3>
+          <div class="window-bars" id="densityWindows"></div>
+        </div>
+        <div class="mini-panel">
+          <h3>Method</h3>
+          <p>
+            Momentum combines sentiment build, relevance, confidence support, exposure weight, and recency.
+            It is meant to become one of the model inputs, not replace per-article sentiment.
+          </p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    function formatSigned(value, digits = 2) {
+      const number = Number(value || 0);
+      return `${number >= 0 ? "+" : ""}${number.toFixed(digits)}`;
+    }
+    function formatCurrency(value) {
+      const number = Number(value || 0);
+      return number ? `$${number.toFixed(2)}` : "—";
+    }
+    function formatVolume(value) {
+      const number = Number(value || 0);
+      if (!number) return "—";
+      if (number >= 1000000) return `${(number / 1000000).toFixed(1)}M`;
+      if (number >= 1000) return `${(number / 1000).toFixed(1)}K`;
+      return String(number);
+    }
+    function scoreClass(value) {
+      const number = Number(value || 0);
+      if (number > 0.02) return "bull";
+      if (number < -0.02) return "bear";
+      return "neutral";
+    }
+    function renderSummary(board) {
+      const totals = board.window_totals || {};
+      const density = board.message_density_windows || {};
+      const coverage = board.quote_coverage || {};
+      const cards = [
+        ["1H Sentiment", formatSigned(totals["1h"] || 0, 3)],
+        ["6H Sentiment", formatSigned(totals["6h"] || 0, 3)],
+        ["24H Sentiment", formatSigned(totals["24h"] || 0, 3)],
+        ["1H Density", Number(density["1h"] || 0).toFixed(2)],
+        ["Quote Coverage", `${coverage.quoted_ticker_count || 0}/${coverage.tracked_ticker_count || 0}`],
+        ["Leaders With Quotes", `${coverage.quoted_leader_count || 0}/${coverage.leader_count || 0}`],
+      ];
+      document.getElementById("summaryGrid").innerHTML = cards.map(([label, value]) => `
+        <article class="summary-card">
+          <div class="summary-label">${label}</div>
+          <div class="summary-value">${value}</div>
+        </article>
+      `).join("");
+    }
+    function renderBars(targetId, values, formatter) {
+      const entries = Object.entries(values || {});
+      const max = Math.max(...entries.map(([, value]) => Math.abs(Number(value || 0))), 1);
+      document.getElementById(targetId).innerHTML = entries.map(([label, value]) => {
+        const width = Math.max(8, Math.round((Math.abs(Number(value || 0)) / max) * 100));
+        return `
+          <div class="bar-row">
+            <div class="metric-label">${label.toUpperCase()}</div>
+            <div class="bar-track"><div class="bar-fill" style="width:${width}%"></div></div>
+            <div class="subtle">${formatter(value)}</div>
+          </div>
+        `;
+      }).join("");
+    }
+    function renderBoard(rows) {
+      const root = document.getElementById("leaderboard");
+      if (!rows.length) {
+        root.innerHTML = '<div class="empty">No momentum leaders are available yet.</div>';
+        return;
+      }
+      root.innerHTML = rows.map((row, index) => `
+        <article class="ticker-row">
+          <div class="rank-pill">${index + 1}</div>
+          <div class="ticker-main">
+            <div class="ticker-symbol">${row.ticker}</div>
+            <div class="ticker-company">${row.company || row.label || ""}</div>
+          </div>
+          <div>
+            <div class="metric-label">Price</div>
+            <div class="metric-value small">${formatCurrency(row.price)}</div>
+          </div>
+          <div>
+            <div class="metric-label">Change</div>
+            <div class="metric-value small ${scoreClass(row.change_pct)}">${formatSigned(row.change_pct)}%</div>
+          </div>
+          <div>
+            <div class="metric-label">Volume</div>
+            <div class="metric-value small">${formatVolume(row.volume)}</div>
+          </div>
+          <div>
+            <div class="metric-label">Sentiment</div>
+            <div class="metric-value small ${scoreClass(row.sentiment)}">${formatSigned(row.sentiment, 3)}</div>
+          </div>
+          <div>
+            <div class="metric-label">Articles</div>
+            <div class="metric-value small">${row.articles || 0}</div>
+          </div>
+          <div>
+            <div class="metric-label">Density</div>
+            <div class="metric-value small">${Number(row.density || 0).toFixed(2)}</div>
+          </div>
+        </article>
+      `).join("");
+    }
+    async function loadMomentum() {
+      const response = await fetch("/api/momentum");
+      const payload = await response.json();
+      const board = payload.marketboard || {};
+      renderSummary(board);
+      renderBoard(board.leaders || []);
+      renderBars("sentimentWindows", board.window_totals || {}, value => formatSigned(value, 3));
+      renderBars("densityWindows", board.message_density_windows || {}, value => Number(value || 0).toFixed(2));
+    }
+    loadMomentum().catch(error => {
+      document.getElementById("leaderboard").innerHTML = `<div class="empty">Momentum failed to load: ${error.message}</div>`;
+    });
+  </script>
+</body>
+</html>

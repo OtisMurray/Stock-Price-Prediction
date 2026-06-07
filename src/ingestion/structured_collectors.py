@@ -54,6 +54,7 @@ DATEISH_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 NEXT_DATA_RE = re.compile(
     r'<script[^>]+id="__NEXT_DATA__"[^>]*>\s*(?P<payload>\{.*?\})\s*</script>',
@@ -117,6 +118,10 @@ STOCKTWITS_UNSUPPORTED_TICKERS: set[str] = set()
 
 def _normalize_text(text: str) -> str:
     return " ".join(unescape(text or "").split())
+
+
+def _normalize_html_text(text: str) -> str:
+    return _normalize_text(HTML_TAG_RE.sub(" ", text or ""))
 
 
 def _exchange_candidates_for_ticker(ticker: str) -> tuple[str, ...]:
@@ -316,7 +321,87 @@ def _headline_from_json(source: StructuredSource, limit: int | None) -> list[Str
     return headlines
 
 
-def _headline_from_access_public_json(source: StructuredSource, limit: int | None) -> list[StructuredHeadline]:
+def _headline_from_newswire_public_html(source: StructuredSource, limit: int | None) -> list[StructuredHeadline]:
+    try:
+        from bs4 import BeautifulSoup  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("beautifulsoup4 is required for Newswire.com HTML fallback parsing.") from exc
+
+    newsroom_urls = (
+        "https://www.newswire.com/newsroom/business-finance",
+        "https://www.newswire.com/newsroom/business",
+        "https://www.newswire.com/newsroom",
+    )
+    requested_limit = max(limit or 20, 1)
+    results: list[StructuredHeadline] = []
+    seen_links: set[str] = set()
+    errors: list[str] = []
+
+    for newsroom_url in newsroom_urls:
+        try:
+            page = fetch_url_with_fallback(newsroom_url)
+        except Exception as exc:
+            errors.append(f"{newsroom_url}: {exc}")
+            continue
+
+        soup = BeautifulSoup(page.html, "html.parser")
+        for card in soup.select(".news-item[itemscope], .news-item"):
+            title_node = card.select_one(".content-link h3, h3")
+            link_node = card.select_one("a.content-link[href], a.more-btn[href], a[href*='/news/']")
+            title = _normalize_text(title_node.get_text(" ", strip=True) if title_node else "")
+            href = str(link_node.get("href", "") if link_node else "")
+            if not href or not _is_probable_headline(title):
+                continue
+
+            full_link = urljoin("https://www.newswire.com/", href)
+            if full_link in seen_links:
+                continue
+            seen_links.add(full_link)
+
+            published = ""
+            time_node = card.select_one("time[datetime]")
+            if time_node:
+                published = _normalize_text(str(time_node.get("datetime", "")) or time_node.get_text(" ", strip=True))
+            if not published:
+                published_meta = card.select_one("meta[itemprop='datePublished'][content]")
+                if published_meta:
+                    published = _normalize_text(str(published_meta.get("content", "")))
+
+            summary = ""
+            description_meta = None
+            for meta_node in card.select("meta[itemprop='description'][content]"):
+                content = str(meta_node.get("content", "") or "")
+                normalized_content = _normalize_html_text(content).lower()
+                if "text with textual alternatives" in normalized_content:
+                    continue
+                if "<" in content or len(normalized_content) >= 40:
+                    description_meta = meta_node
+                    break
+            if description_meta:
+                summary = _normalize_html_text(str(description_meta.get("content", "")))
+
+            results.append(
+                StructuredHeadline(
+                    source_key=source.key,
+                    source_name=source.name,
+                    title=title,
+                    link=full_link,
+                    published=published,
+                    summary=summary,
+                    collection_method="html_fallback",
+                    notes=f"{source.notes} Newswire.com public newsroom fallback.",
+                )
+            )
+            if len(results) >= requested_limit:
+                return results
+
+    if results:
+        return results
+    joined_errors = "; ".join(errors) if errors else "no public Newswire.com newsroom cards found"
+    raise RuntimeError(f"ACCESS Newswire fallback failed: {joined_errors}")
+
+
+def _headline_from_access_json_api(source: StructuredSource, limit: int | None) -> list[StructuredHeadline]:
     try:
         from curl_cffi import requests as curl_requests
     except ImportError as exc:
@@ -359,6 +444,11 @@ def _headline_from_access_public_json(source: StructuredSource, limit: int | Non
                 headers=headers,
                 timeout=20,
             )
+            if response.status_code != 200:
+                detail = _normalize_text(response.text)[:240]
+                raise RuntimeError(
+                    f"ACCESS Newswire public API returned HTTP {response.status_code}: {detail}"
+                )
             try:
                 payload = response.json()
                 break
@@ -401,6 +491,16 @@ def _headline_from_access_public_json(source: StructuredSource, limit: int | Non
             break
 
     return headlines
+
+
+def _headline_from_access_public_json(source: StructuredSource, limit: int | None) -> list[StructuredHeadline]:
+    try:
+        headlines = _headline_from_access_json_api(source, limit)
+        if headlines:
+            return headlines
+    except Exception:
+        return _headline_from_newswire_public_html(source, limit)
+    return _headline_from_newswire_public_html(source, limit)
 
 
 def _candidate_anchors(source: StructuredSource, soup) -> Iterable:

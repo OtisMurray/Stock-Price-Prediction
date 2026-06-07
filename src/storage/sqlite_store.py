@@ -9,13 +9,21 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
-from src.analysis import score_article_sentiment
+from src.analysis import score_article_sentiment, sentiment_runtime_status
+from src.ingestion.rss_sources import RSS_SOURCES
+from src.ingestion.structured_sources import STRUCTURED_SOURCES
 from src.ingestion.timestamp_utils import normalize_published_fields
 
 
 LIVE_FEED_RECENT_HOURS = 48
 LIVE_FEED_FALLBACK_HOURS = 72
 SENTIMENT_CACHE_VERSION = "v1"
+SENTIMENT_BUCKET_PRIORITY = {
+    "stories": 0,
+    "related_context": 1,
+    "review_candidates": 2,
+    "rejections": 3,
+}
 
 
 def _utc_now_iso() -> str:
@@ -87,6 +95,50 @@ def _sentiment_cache_key(*, story_key: str, ticker: str, bucket: str) -> str:
     return f"{story_key}::{ticker.upper()}::{bucket}"
 
 
+def _source_descriptor(source_key: str, source_group: str) -> tuple[str, str]:
+    normalized_key = str(source_key or "").strip().lower()
+    normalized_group = str(source_group or "").strip().lower()
+    if normalized_group == "structured_news" and normalized_key in STRUCTURED_SOURCES:
+        source = STRUCTURED_SOURCES[normalized_key]
+        return source.source_family, source.quality_tier
+    if normalized_group == "baseline_rss" and normalized_key in RSS_SOURCES:
+        source = RSS_SOURCES[normalized_key]
+        return source.source_family, source.quality_tier
+    if normalized_key == "stocktwits":
+        return "unstructured", "supplemental_unstructured"
+    return "structured", "secondary_structured"
+
+
+def _sentiment_fields_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "sentiment_cache_version": str(row["sentiment_cache_version"] or ""),
+        "sentiment_label": str(row["sentiment_label"] or ""),
+        "sentiment_score": float(row["sentiment_score"] or 0.0),
+        "sentiment_confidence": float(row["sentiment_confidence"] or 0.0),
+        "raw_sentiment_confidence": float(row["raw_sentiment_confidence"] or 0.0),
+        "signal_confidence": float(row["signal_confidence"] or 0.0),
+        "ticker_relevance_confidence": float(row["ticker_relevance_confidence"] or 0.0),
+        "ticker_relevance_markers": _json_loads(row["ticker_relevance_markers_json"], []),
+        "sentiment_source_weight": float(row["sentiment_source_weight"] or 0.0),
+        "market_impact_bias": str(row["market_impact_bias"] or ""),
+        "sentiment_positive_markers": _json_loads(row["sentiment_positive_markers_json"], []),
+        "sentiment_negative_markers": _json_loads(row["sentiment_negative_markers_json"], []),
+        "sentiment_pipeline_stage": str(row["sentiment_pipeline_stage"] or ""),
+        "sentiment_model_used": str(row["sentiment_model_used"] or ""),
+        "future_model_target": str(row["future_model_target"] or ""),
+        "finbert_ready": bool(row["finbert_ready"]),
+        "finbert_readiness_reason": str(row["finbert_readiness_reason"] or ""),
+        "finbert_input_length": int(row["finbert_input_length"] or 0),
+        "finbert_model_available": bool(row["finbert_model_available"]),
+        "finbert_label": str(row["finbert_label"] or ""),
+        "finbert_score": float(row["finbert_score"] or 0.0),
+        "finbert_confidence": float(row["finbert_confidence"] or 0.0),
+        "finbert_positive_probability": float(row["finbert_positive_probability"] or 0.0),
+        "finbert_negative_probability": float(row["finbert_negative_probability"] or 0.0),
+        "finbert_neutral_probability": float(row["finbert_neutral_probability"] or 0.0),
+    }
+
+
 def _compute_story_exposure_metrics(*, coverage_count: Any, coverage_sources: Any) -> dict[str, Any]:
     observation_count = max(int(coverage_count or 0), 1)
     normalized_sources = sorted(
@@ -111,8 +163,8 @@ def _compute_story_exposure_metrics(*, coverage_count: Any, coverage_sources: An
     }
 
 
-def _sentiment_snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
-    sentiment = score_article_sentiment(row)
+def _sentiment_snapshot_payload(row: dict[str, Any], *, force_finbert_ready: bool = False) -> dict[str, Any]:
+    sentiment = score_article_sentiment(row, force_finbert_ready=force_finbert_ready)
     exposure = _compute_story_exposure_metrics(
         coverage_count=row.get("coverage_count"),
         coverage_sources=row.get("coverage_sources", []),
@@ -145,6 +197,79 @@ def _sentiment_snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
         "exposure_observation_count": int(exposure["exposure_observation_count"]),
         "exposure_source_count": int(exposure["exposure_source_count"]),
         "exposure_weight": float(exposure["exposure_weight"]),
+    }
+
+
+def _fetch_story_sentiment_field_map(
+    conn: sqlite3.Connection,
+    story_keys: list[str],
+) -> dict[str, dict[str, Any]]:
+    normalized_story_keys = sorted({str(story_key).strip() for story_key in story_keys if str(story_key).strip()})
+    if not normalized_story_keys:
+        return {}
+
+    placeholders = ", ".join("?" for _ in normalized_story_keys)
+    rows = conn.execute(
+        f"""
+        WITH ranked_sentiment AS (
+            SELECT
+                *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY story_key
+                    ORDER BY
+                        finbert_model_available DESC,
+                        CASE bucket
+                            WHEN 'stories' THEN 0
+                            WHEN 'related_context' THEN 1
+                            WHEN 'review_candidates' THEN 2
+                            ELSE 3
+                        END ASC,
+                        signal_confidence DESC,
+                        ticker_relevance_confidence DESC,
+                        updated_at DESC,
+                        id DESC
+                ) AS story_rank
+            FROM story_sentiment_snapshots
+            WHERE story_key IN ({placeholders})
+              AND sentiment_cache_version = ?
+        )
+        SELECT
+            story_key,
+            sentiment_cache_version,
+            sentiment_label,
+            sentiment_score,
+            sentiment_confidence,
+            raw_sentiment_confidence,
+            signal_confidence,
+            ticker_relevance_confidence,
+            ticker_relevance_markers_json,
+            sentiment_source_weight,
+            market_impact_bias,
+            sentiment_positive_markers_json,
+            sentiment_negative_markers_json,
+            sentiment_pipeline_stage,
+            sentiment_model_used,
+            future_model_target,
+            finbert_ready,
+            finbert_readiness_reason,
+            finbert_input_length,
+            finbert_model_available,
+            finbert_label,
+            finbert_score,
+            finbert_confidence,
+            finbert_positive_probability,
+            finbert_negative_probability,
+            finbert_neutral_probability
+        FROM ranked_sentiment
+        WHERE story_rank = 1
+        """,
+        (*normalized_story_keys, SENTIMENT_CACHE_VERSION),
+    ).fetchall()
+
+    return {
+        str(row["story_key"] or ""): _sentiment_fields_from_row(row)
+        for row in rows
+        if str(row["story_key"] or "")
     }
 
 
@@ -400,6 +525,17 @@ def initialize_database(db_path: str) -> None:
         _ensure_column(conn, "story_translations", "updated_at", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "story_sentiment_snapshots", "signal_confidence", "REAL NOT NULL DEFAULT 0.0")
         _ensure_column(conn, "story_sentiment_snapshots", "market_impact_bias", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "story_sentiment_snapshots", "future_model_target", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "story_sentiment_snapshots", "finbert_ready", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "story_sentiment_snapshots", "finbert_readiness_reason", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "story_sentiment_snapshots", "finbert_input_length", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "story_sentiment_snapshots", "finbert_model_available", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "story_sentiment_snapshots", "finbert_label", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "story_sentiment_snapshots", "finbert_score", "REAL NOT NULL DEFAULT 0.0")
+        _ensure_column(conn, "story_sentiment_snapshots", "finbert_confidence", "REAL NOT NULL DEFAULT 0.0")
+        _ensure_column(conn, "story_sentiment_snapshots", "finbert_positive_probability", "REAL NOT NULL DEFAULT 0.0")
+        _ensure_column(conn, "story_sentiment_snapshots", "finbert_negative_probability", "REAL NOT NULL DEFAULT 0.0")
+        _ensure_column(conn, "story_sentiment_snapshots", "finbert_neutral_probability", "REAL NOT NULL DEFAULT 0.0")
 
 
 def _upsert_story(conn: sqlite3.Connection, row: dict[str, Any], *, seen_at: str) -> str:
@@ -492,9 +628,10 @@ def _upsert_story_sentiment_snapshot(
     bucket: str,
     row: dict[str, Any],
     created_at: str,
+    snapshot: dict[str, Any] | None = None,
 ) -> None:
     cache_key = _sentiment_cache_key(story_key=story_key, ticker=ticker, bucket=bucket)
-    snapshot = _sentiment_snapshot_payload(row)
+    snapshot = snapshot or _sentiment_snapshot_payload(row)
     conn.execute(
         """
         INSERT INTO story_sentiment_snapshots (
@@ -1223,31 +1360,7 @@ def fetch_cached_story_sentiment(
             "ticker": str(row["ticker"] or ""),
             "bucket": str(row["bucket"] or ""),
             "refresh_run_id": int(row["refresh_run_id"] or 0),
-            "sentiment_cache_version": str(row["sentiment_cache_version"] or ""),
-            "sentiment_label": str(row["sentiment_label"] or ""),
-            "sentiment_score": float(row["sentiment_score"] or 0.0),
-            "sentiment_confidence": float(row["sentiment_confidence"] or 0.0),
-            "raw_sentiment_confidence": float(row["raw_sentiment_confidence"] or 0.0),
-            "signal_confidence": float(row["signal_confidence"] or 0.0),
-            "ticker_relevance_confidence": float(row["ticker_relevance_confidence"] or 0.0),
-            "ticker_relevance_markers": _json_loads(row["ticker_relevance_markers_json"], []),
-            "sentiment_source_weight": float(row["sentiment_source_weight"] or 0.0),
-            "market_impact_bias": str(row["market_impact_bias"] or ""),
-            "sentiment_positive_markers": _json_loads(row["sentiment_positive_markers_json"], []),
-            "sentiment_negative_markers": _json_loads(row["sentiment_negative_markers_json"], []),
-            "sentiment_pipeline_stage": str(row["sentiment_pipeline_stage"] or ""),
-            "sentiment_model_used": str(row["sentiment_model_used"] or ""),
-            "future_model_target": str(row["future_model_target"] or ""),
-            "finbert_ready": bool(row["finbert_ready"]),
-            "finbert_readiness_reason": str(row["finbert_readiness_reason"] or ""),
-            "finbert_input_length": int(row["finbert_input_length"] or 0),
-            "finbert_model_available": bool(row["finbert_model_available"]),
-            "finbert_label": str(row["finbert_label"] or ""),
-            "finbert_score": float(row["finbert_score"] or 0.0),
-            "finbert_confidence": float(row["finbert_confidence"] or 0.0),
-            "finbert_positive_probability": float(row["finbert_positive_probability"] or 0.0),
-            "finbert_negative_probability": float(row["finbert_negative_probability"] or 0.0),
-            "finbert_neutral_probability": float(row["finbert_neutral_probability"] or 0.0),
+            **_sentiment_fields_from_row(row),
             "exposure_observation_count": int(row["exposure_observation_count"] or 0),
             "exposure_source_count": int(row["exposure_source_count"] or 0),
             "exposure_weight": float(row["exposure_weight"] or 0.0),
@@ -1256,6 +1369,238 @@ def fetch_cached_story_sentiment(
         }
         for row in rows
     ]
+
+
+def refresh_story_sentiment_snapshots(
+    db_path: str,
+    *,
+    refresh_run_id: int | None = None,
+    limit: int = 250,
+    dry_run: bool = False,
+    enrich_missing_text: bool = False,
+    translate_non_english: bool = False,
+    force_finbert_ready: bool = False,
+) -> dict[str, Any]:
+    path = Path(db_path)
+    if not path.exists():
+        return {
+            "ok": False,
+            "message": f"SQLite database not found: {db_path}",
+            "selected_refresh_run_id": 0,
+            "candidate_count": 0,
+            "rescored_count": 0,
+            "written_count": 0,
+            "dry_run": dry_run,
+            "enriched_text_count": 0,
+            "translated_text_count": 0,
+            "remaining_blockers": {},
+            "sentiment_runtime": sentiment_runtime_status(),
+        }
+
+    initialize_database(db_path)
+    max_rows = max(1, int(limit or 250))
+    now_iso = _utc_now_iso()
+    with _connect(db_path) as conn:
+        selected_refresh_run_id = int(refresh_run_id or 0)
+        if selected_refresh_run_id <= 0:
+            latest = conn.execute(
+                """
+                SELECT id
+                FROM refresh_runs
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            selected_refresh_run_id = int(latest["id"] or 0) if latest else 0
+        if selected_refresh_run_id <= 0:
+            return {
+                "ok": False,
+                "message": "No refresh run is available to rescore.",
+                "selected_refresh_run_id": 0,
+                "candidate_count": 0,
+                "rescored_count": 0,
+                "written_count": 0,
+                "dry_run": dry_run,
+                "enriched_text_count": 0,
+                "translated_text_count": 0,
+                "remaining_blockers": {},
+                "sentiment_runtime": sentiment_runtime_status(),
+            }
+
+        rows = conn.execute(
+            """
+            SELECT
+                so.refresh_run_id,
+                so.ticker,
+                so.bucket,
+                so.story_key,
+                so.signal_strength,
+                so.event_type,
+                so.coverage_count,
+                so.coverage_sources_json,
+                so.summary,
+                so.collected_at,
+                so.published_display,
+                tr.company,
+                tr.sector,
+                tr.industry,
+                s.title,
+                s.link,
+                s.canonical_link,
+                s.normalized_title_key,
+                s.source_group,
+                s.source_key,
+                s.source_name,
+                s.collection_method,
+                s.published_raw,
+                s.published_at,
+                s.first_seen_at,
+                s.last_seen_at,
+                ss.finbert_model_available AS cached_finbert_model_available,
+                ss.finbert_label AS cached_finbert_label,
+                ss.finbert_score AS cached_finbert_score,
+                ss.finbert_confidence AS cached_finbert_confidence,
+                ss.finbert_positive_probability AS cached_finbert_positive_probability,
+                ss.finbert_negative_probability AS cached_finbert_negative_probability,
+                ss.finbert_neutral_probability AS cached_finbert_neutral_probability
+            FROM story_observations AS so
+            JOIN stories AS s
+              ON s.story_key = so.story_key
+            LEFT JOIN ticker_runs AS tr
+              ON tr.refresh_run_id = so.refresh_run_id
+             AND tr.ticker = so.ticker
+            LEFT JOIN story_sentiment_snapshots AS ss
+              ON ss.story_key = so.story_key
+             AND ss.ticker = so.ticker
+             AND ss.bucket = so.bucket
+             AND ss.sentiment_cache_version = ?
+            WHERE so.refresh_run_id = ?
+              AND so.bucket IN ('stories', 'related_context', 'review_candidates')
+            ORDER BY
+                COALESCE(so.signal_strength, 0) DESC,
+                s.last_seen_at DESC,
+                so.story_rank ASC,
+                so.id ASC
+            LIMIT ?
+            """,
+            (SENTIMENT_CACHE_VERSION, selected_refresh_run_id, max_rows),
+        ).fetchall()
+
+        rescored_count = 0
+        finbert_applied_count = 0
+        finbert_reused_count = 0
+        finbert_inference_count = 0
+        finbert_ready_count = 0
+        enriched_text_count = 0
+        translated_text_count = 0
+        remaining_blockers: dict[str, int] = {}
+        label_counts: dict[str, int] = {}
+        for row in rows:
+            source_family, source_quality_tier = _source_descriptor(row["source_key"], row["source_group"])
+            ticker = str(row["ticker"] or "").strip().upper()
+            bucket = str(row["bucket"] or "")
+            story_key_text = str(row["story_key"] or "")
+            scoring_row = {
+                "story_key": story_key_text,
+                "ticker": ticker,
+                "company": str(row["company"] or ""),
+                "sector": str(row["sector"] or ""),
+                "industry": str(row["industry"] or ""),
+                "bucket": bucket,
+                "title": str(row["title"] or ""),
+                "summary": str(row["summary"] or ""),
+                "link": str(row["link"] or ""),
+                "canonical_link": str(row["canonical_link"] or ""),
+                "normalized_title_key": str(row["normalized_title_key"] or ""),
+                "source_group": str(row["source_group"] or ""),
+                "source_key": str(row["source_key"] or ""),
+                "source_name": str(row["source_name"] or ""),
+                "source_family": source_family,
+                "source_quality_tier": source_quality_tier,
+                "collection_method": str(row["collection_method"] or ""),
+                "published_raw": str(row["published_raw"] or row["published_display"] or ""),
+                "published_at": str(row["published_at"] or ""),
+                "first_seen_at": str(row["first_seen_at"] or ""),
+                "last_seen_at": str(row["last_seen_at"] or ""),
+                "collected_at": str(row["collected_at"] or ""),
+                "event_type": str(row["event_type"] or ""),
+                "signal_strength": float(row["signal_strength"] or 0.0),
+                "coverage_count": int(row["coverage_count"] or 0),
+                "coverage_sources": _json_loads(row["coverage_sources_json"], []),
+                "matched_tickers": [ticker] if ticker else [],
+                "matched_ticker_count": 1 if ticker else 0,
+                "cached_finbert_model_available": bool(row["cached_finbert_model_available"]),
+                "cached_finbert_label": str(row["cached_finbert_label"] or ""),
+                "cached_finbert_score": float(row["cached_finbert_score"] or 0.0),
+                "cached_finbert_confidence": float(row["cached_finbert_confidence"] or 0.0),
+                "cached_finbert_positive_probability": float(
+                    row["cached_finbert_positive_probability"] or 0.0
+                ),
+                "cached_finbert_negative_probability": float(
+                    row["cached_finbert_negative_probability"] or 0.0
+                ),
+                "cached_finbert_neutral_probability": float(
+                    row["cached_finbert_neutral_probability"] or 0.0
+                ),
+            }
+            if enrich_missing_text or translate_non_english:
+                from src.ingestion.article_enrichment import enrich_article_for_finbert
+
+                scoring_row, enrichment_report = enrich_article_for_finbert(
+                    scoring_row,
+                    fetch_missing_text=enrich_missing_text,
+                    translate_non_english=translate_non_english,
+                )
+                if enrichment_report.get("fetched_article_text"):
+                    enriched_text_count += 1
+                if enrichment_report.get("translated_text"):
+                    translated_text_count += 1
+            sentiment = _sentiment_snapshot_payload(scoring_row, force_finbert_ready=force_finbert_ready)
+            label = str(sentiment.get("sentiment_label", "neutral") or "neutral")
+            label_counts[label] = label_counts.get(label, 0) + 1
+            if sentiment.get("finbert_ready"):
+                finbert_ready_count += 1
+            else:
+                reason = str(sentiment.get("finbert_readiness_reason", "") or "not_ready")
+                remaining_blockers[reason] = remaining_blockers.get(reason, 0) + 1
+            if sentiment.get("finbert_model_available"):
+                finbert_applied_count += 1
+                if bool(scoring_row.get("cached_finbert_model_available")):
+                    finbert_reused_count += 1
+                else:
+                    finbert_inference_count += 1
+            rescored_count += 1
+
+            if not dry_run:
+                _upsert_story_sentiment_snapshot(
+                    conn,
+                    refresh_run_id=selected_refresh_run_id,
+                    story_key=story_key_text,
+                    ticker=ticker,
+                    bucket=bucket,
+                    row=scoring_row,
+                    created_at=now_iso,
+                    snapshot=sentiment,
+                )
+
+        return {
+            "ok": True,
+            "message": "Sentiment snapshots rescored.",
+            "selected_refresh_run_id": selected_refresh_run_id,
+            "candidate_count": len(rows),
+            "rescored_count": rescored_count,
+            "written_count": 0 if dry_run else rescored_count,
+            "dry_run": dry_run,
+            "label_counts": label_counts,
+            "finbert_ready_count": finbert_ready_count,
+            "finbert_applied_count": finbert_applied_count,
+            "finbert_reused_count": finbert_reused_count,
+            "finbert_inference_count": finbert_inference_count,
+            "enriched_text_count": enriched_text_count,
+            "translated_text_count": translated_text_count,
+            "remaining_blockers": remaining_blockers,
+            "sentiment_runtime": sentiment_runtime_status(),
+        }
 
 
 def fetch_latest_market_article_pool(db_path: str) -> dict[str, Any]:
@@ -1317,6 +1662,10 @@ def fetch_latest_market_article_pool(db_path: str) -> dict[str, Any]:
                 (int(refresh_run["id"]),),
             ).fetchall()
 
+            sentiment_by_story_key = _fetch_story_sentiment_field_map(
+                conn,
+                [str(row["story_key"] or "") for row in rows],
+            )
             articles = []
             for row in rows:
                 collected_at = str(row["last_collected_at"] or refresh_run["generated_at"] or "")
@@ -1335,9 +1684,10 @@ def fetch_latest_market_article_pool(db_path: str) -> dict[str, Any]:
                 )
                 buckets = sorted([value for value in str(row["buckets_csv"] or "").split(",") if value])
                 event_types = sorted([value for value in str(row["event_types_csv"] or "").split(",") if value])
+                story_key = str(row["story_key"] or "")
                 articles.append(
                     {
-                        "story_key": str(row["story_key"] or ""),
+                        "story_key": story_key,
                         "canonical_link": str(row["canonical_link"] or ""),
                         "normalized_title_key": str(row["normalized_title_key"] or ""),
                         "title": str(row["title"] or ""),
@@ -1363,6 +1713,7 @@ def fetch_latest_market_article_pool(db_path: str) -> dict[str, Any]:
                         "matched_ticker_count": len(matched_tickers),
                         "buckets": buckets,
                         "event_types": event_types,
+                        **sentiment_by_story_key.get(story_key, {}),
                     }
                 )
 
