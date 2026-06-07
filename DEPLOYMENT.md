@@ -37,7 +37,7 @@ For a public demo link, there are two practical modes:
 ## Start command
 
 ```bash
-gunicorn wsgi:app
+gunicorn app:app
 ```
 
 ## Useful environment variables

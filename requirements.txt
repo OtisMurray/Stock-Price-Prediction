@@ -3,5 +3,7 @@ cloudscraper
 curl-cffi
 feedparser
 flask
+flask-compress
+gunicorn
 torch
 transformers

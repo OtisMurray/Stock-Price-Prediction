@@ -2,21 +2,26 @@
 
 Real-time stock-news intelligence dashboard for collecting, organizing, and monitoring market-related articles at scale.
 
-The project has moved beyond the original small watchlist prototype. It now uses a Flask + React dashboard, a SQLite-backed storage layer, shared-source collection, article-pool-first feed logic, and a 50-ticker stress-test setup for backend optimization.
+Live app:
+
+- [https://stock-news-dashboard-web-production.up.railway.app](https://stock-news-dashboard-web-production.up.railway.app)
+
+The project has moved beyond the original small watchlist prototype. It now uses a Flask + React dashboard, a SQLite-backed storage layer, shared-source collection, article-pool-first feed logic, and a 100-ticker U.S. watchlist for broader live monitoring.
 
 ## Current Progress
 
-The current phase is focused on data-source quality, ingestion reliability, deduplication, timestamp handling, and scalable backend structure before moving into sentiment and prediction layers.
+The current phase is focused on data-source quality, ingestion reliability, deduplication, timestamp handling, sentiment calibration, and scalable backend structure before moving deeper into prediction layers.
 
 What is working now:
 
 - Flask + React dashboard for live article monitoring
 - SQLite as the main backend data layer for dashboard state
 - Shared-source-pool collection to reduce repeated source fetching
-- 50-ticker stress-test watchlist for scaling and optimization work
+- 100-ticker live watchlist for scaling and optimization work
 - Source-health tracking and pipeline monitoring
 - Article-pool-first feed with ticker filters layered on top
 - Ticker workspace with relevant news, source history, and a prediction placeholder
+- First-pass sentiment scoring with confidence, ticker relevance, and explainability
 - Timestamp tracking for:
   - `published`
   - `first captured`
@@ -25,8 +30,7 @@ What is working now:
 
 What is intentionally being saved for later:
 
-- full sentiment analysis layer
-- prediction models
+- model-heavy prediction workflows
 - true market-wide collection beyond the tracked ticker universe
 
 ## Current Architecture
@@ -88,7 +92,7 @@ src/
   runners/          Main executable workflows
   storage/          SQLite read/write helpers
   other/            Convenience wrappers for common scripts
-  sentiment/        Reserved for later sentiment work
+  analysis/         Sentiment scoring and model integration logic
 
 data/
   watchlists/       Sample and stress-test ticker lists
@@ -106,7 +110,7 @@ tmp/                Temporary working files
 - `/Users/otismurray/Stock-Price-Prediction/src/ingestion/timestamp_utils.py`
 - `/Users/otismurray/Stock-Price-Prediction/src/preprocessing/news_preprocessor.py`
 - `/Users/otismurray/Stock-Price-Prediction/data/watchlists/sample_watchlist.json`
-- `/Users/otismurray/Stock-Price-Prediction/data/watchlists/stress_watchlist_50.json`
+- `/Users/otismurray/Stock-Price-Prediction/data/watchlists/us_market_watchlist_100.json`
 
 ## Setup
 
@@ -116,13 +120,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Optional Sentiment Dependencies
-
-The hosted dashboard does not require the heavy sentiment stack. If you want to run later FinBERT or transformer-based sentiment experiments locally, install:
-
-```bash
-pip install -r requirements-sentiment.txt
-```
+`requirements.txt` is the single consolidated dependency file for the dashboard, storage layer, and current sentiment stack.
 
 ## Main Commands
 
@@ -177,12 +175,12 @@ For hosted deployment notes, see:
 python3 src/other/watchlist_dashboard_legacy.py --port 8001
 ```
 
-### Run a 50-Ticker Collection Snapshot
+### Run a 100-Ticker Collection Snapshot
 
 ```bash
-python3 src/other/collect_watchlist_snapshot.py \
-  --watchlist-file data/watchlists/stress_watchlist_50.json \
-  --json-out data/cache/watchlist_snapshot_50_latest.json \
+python3 src/runners/collect_watchlist_snapshot.py \
+  --watchlist-file data/watchlists/us_market_watchlist_100.json \
+  --json-out data/cache/watchlist_snapshot_100_latest.json \
   --rss-limit 0 \
   --structured-limit 0 \
   --include-seen \
@@ -192,7 +190,7 @@ python3 src/other/collect_watchlist_snapshot.py \
 ### Run a Single-Ticker Collection
 
 ```bash
-python3 src/other/collect_all_for_ticker.py \
+python3 src/runners/collect_all_for_ticker.py \
   --ticker AAPL \
   --company Apple \
   --keyword iphone \
@@ -202,10 +200,43 @@ python3 src/other/collect_all_for_ticker.py \
   --include-seen
 ```
 
+### Refresh Sentiment Snapshots
+
+Run model sentiment as a separate SQLite backfill step instead of inside the
+dashboard request path:
+
+```bash
+python3 src/runners/refresh_sentiment_snapshots.py --limit 250
+```
+
+Safer inspection modes:
+
+```bash
+python3 src/runners/refresh_sentiment_snapshots.py --limit 50 --dry-run
+python3 src/runners/refresh_sentiment_snapshots.py --limit 250 --rule-only
+```
+
+By default, FinBERT uses the local Hugging Face cache only. To intentionally
+download `ProsusAI/finbert`, pass:
+
+```bash
+python3 src/runners/refresh_sentiment_snapshots.py --enable-finbert-download --limit 250
+```
+
+On Railway, FinBERT is intentionally guarded so the hosted web app stays on the
+lightweight request path. If you later run a controlled backfill job in Railway,
+use the snapshot refresh runner with `--allow-railway-finbert` instead of
+turning model inference on for normal dashboard requests.
+
+The hosted dashboard can still populate FinBERT-backed sentiment automatically
+after a refresh by running a post-refresh snapshot batch into SQLite. That
+batch uses the retained article pool and keeps request-time page loads on the
+cached path.
+
 ### Audit Current Sources
 
 ```bash
-python3 src/other/audit_sources.py --ticker AAPL --limit 3
+python3 src/runners/audit_sources.py --ticker AAPL --limit 3
 ```
 
 ## Current Dashboard Behavior
